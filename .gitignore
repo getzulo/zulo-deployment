@@ -1,0 +1,17 @@
+# Secrets, logs, state
+*.local.json
+.env.local
+.env.*.local
+logs/
+volumes/
+*.sqlite
+*.sqlite-shm
+*.sqlite-wal
+
+# Generated configs
+.generated/
+*.rendered
+
+# OS
+.DS_Store
+Thumbs.db
