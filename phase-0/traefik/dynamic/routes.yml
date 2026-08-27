@@ -1,0 +1,22 @@
+# Static routes for the local-dev file-provider mode (docker-compose.fileprovider.yml).
+#
+# Mirrors, by hand, what the traefik.* labels on tenant-t1 express declaratively.
+# The service address uses the compose service name: containers on the shared
+# `edge` network resolve each other by name through Docker's embedded DNS.
+#
+# Adding a tenant here means editing this file — which is exactly the manual toil
+# the label-based docker provider (and, in Phase 1, the control plane) removes.
+
+http:
+  routers:
+    t1:
+      rule: "Host(`t1.localhost`)"
+      entryPoints:
+        - web
+      service: t1
+
+  services:
+    t1:
+      loadBalancer:
+        servers:
+          - url: "http://tenant-t1:8080"

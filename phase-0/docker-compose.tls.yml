@@ -1,0 +1,60 @@
+# TLS overlay for a REAL host — public DNS + Let's Encrypt.
+#
+#   docker compose -f docker-compose.yml -f docker-compose.tls.yml up -d
+#
+# Prerequisites:
+#   1. A wildcard DNS record  *.example.com A → this host's public IP
+#      (wildcard is what lets a new tenant appear with no DNS change).
+#   2. DNS-provider API credentials in .env for the DNS-01 challenge — that is
+#      what allows ONE wildcard certificate to cover every tenant, instead of
+#      issuing a certificate per subdomain and running into ACME rate limits.
+#   3. T1_HOST set to a real name, e.g. t1.example.com
+name: zuloone-phase0
+
+services:
+  traefik:
+    command:
+      - --providers.docker=true
+      - --providers.docker.exposedByDefault=false
+      - --providers.docker.network=zuloone-phase0_edge
+      - --entrypoints.web.address=:80
+      # Everything arriving on :80 is bounced to TLS.
+      - --entrypoints.web.http.redirections.entrypoint.to=websecure
+      - --entrypoints.web.http.redirections.entrypoint.scheme=https
+      - --entrypoints.websecure.address=:443
+      - --certificatesresolvers.le.acme.email=${ACME_EMAIL:?set ACME_EMAIL in .env}
+      - --certificatesresolvers.le.acme.storage=/acme/acme.json
+      - --certificatesresolvers.le.acme.dnschallenge=true
+      - --certificatesresolvers.le.acme.dnschallenge.provider=${ACME_DNS_PROVIDER:?set ACME_DNS_PROVIDER in .env}
+      - --api.dashboard=true
+      - --log.level=INFO
+      - --accesslog=true
+    ports:
+      - "80:80"
+      - "443:443"
+      - "127.0.0.1:8080:8080"
+    environment:
+      # Provider credentials (lego reads these). Cloudflare shown; swap the
+      # variable names for your provider — see Traefik's ACME provider docs.
+      CF_DNS_API_TOKEN: ${CF_DNS_API_TOKEN:-}
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      # Issued certificates MUST survive a restart, or every `up` re-requests
+      # them and burns the ACME rate limit.
+      - acme:/acme
+
+  tenant-t1:
+    labels:
+      traefik.enable: "true"
+      traefik.docker.network: zuloone-phase0_edge
+      traefik.http.routers.t1.rule: Host(`${T1_HOST:?set T1_HOST to a real name}`)
+      traefik.http.routers.t1.entrypoints: websecure
+      traefik.http.routers.t1.tls: "true"
+      traefik.http.routers.t1.tls.certresolver: le
+      # One wildcard certificate covers every current and future tenant.
+      traefik.http.routers.t1.tls.domains[0].main: ${ACME_DOMAIN:?set ACME_DOMAIN in .env}
+      traefik.http.routers.t1.tls.domains[0].sans: "*.${ACME_DOMAIN}"
+      traefik.http.services.t1.loadbalancer.server.port: "8080"
+
+volumes:
+  acme:

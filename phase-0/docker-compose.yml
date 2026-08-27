@@ -1,0 +1,106 @@
+# Phase 0 — prove the tenant shape end-to-end.
+#
+#   Traefik (ingress)  →  one ZuloOne tenant container  →  Postgres (one DB per tenant)
+#
+# Defaults are LOCAL and plain-HTTP so this stack runs with no DNS and no
+# certificates: browsers resolve *.localhost to 127.0.0.1 on their own, so the
+# tenant is reachable at http://t1.localhost after `docker compose up`.
+#
+# For a real host add the TLS overlay (public DNS + Let's Encrypt):
+#   docker compose -f docker-compose.yml -f docker-compose.tls.yml up -d
+name: zuloone-phase0
+
+services:
+  # ------------------------------------------------------------- ingress ---
+  # The ONLY component publishing ports. Tenants stay on the internal network
+  # and are reachable exclusively through here (ControlPlane.Deployment.md §5).
+  traefik:
+    image: traefik:v3.3
+    restart: unless-stopped
+    command:
+      - --providers.docker=true
+      # Containers must opt in with traefik.enable=true, so Postgres and Traefik
+      # itself are never accidentally routable.
+      - --providers.docker.exposedByDefault=false
+      - --providers.docker.network=zuloone-phase0_edge
+      - --entrypoints.web.address=:80
+      - --api.dashboard=true
+      - --log.level=INFO
+      - --accesslog=true
+    ports:
+      - "80:80"
+      # Traefik's own dashboard, bound to loopback so it is not world-readable.
+      # Configurable because the container-side 8080 is frequently taken on the
+      # host (Windows reserves it in an excluded port range, among others).
+      - "127.0.0.1:${TRAEFIK_DASHBOARD_PORT:-8090}:8080"
+    volumes:
+      # Read-only: Traefik only needs to WATCH container labels. Phase 2 replaces
+      # this with a socket proxy that whitelists those calls (§12).
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    networks:
+      - edge
+
+  # ------------------------------------------------------------ database ---
+  # One cluster, one database per tenant. Not published — only the tenant
+  # containers (and later the control plane) reach it over the internal network.
+  postgres:
+    image: postgres:17-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+      POSTGRES_DB: postgres
+      # Read by the bootstrap script below so the tenant role's password matches
+      # the connection string compose hands the tenant container.
+      T1_DB_PASSWORD: ${T1_DB_PASSWORD:?set T1_DB_PASSWORD in .env}
+    volumes:
+      - pg-data:/var/lib/postgresql/data
+      # Runs ONLY on first initialisation of an empty data volume. Phase 1 hands
+      # this job to the control plane, which creates a DB + role per tenant.
+      - ./postgres/init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    networks:
+      - data
+
+  # -------------------------------------------------------------- tenant ---
+  # The unit the control plane will provision N times in Phase 1. Everything
+  # tenant-specific is env + labels; the image itself is deployment-agnostic.
+  tenant-t1:
+    image: ${ZULOONE_IMAGE:-zuloone/core:dev}
+    restart: unless-stopped
+    environment:
+      Database__Provider: PostgreSql
+      ConnectionStrings__DefaultConnection: >-
+        Host=postgres;Database=tenant_t1;Username=tenant_t1;Password=${T1_DB_PASSWORD:?set T1_DB_PASSWORD in .env}
+      # Per-tenant signing key: a token minted for one tenant is meaningless to
+      # any other. Phase 1 generates and stores these in the control plane.
+      Jwt__SigningKey: ${T1_JWT_KEY:?set T1_JWT_KEY in .env}
+      # TLS terminates at Traefik, so Core is reached over plain HTTP; without
+      # this its HTTPS redirect would bounce forever (Program.cs).
+      ZuloOne__BehindReverseProxy: "true"
+    labels:
+      traefik.enable: "true"
+      traefik.docker.network: zuloone-phase0_edge
+      traefik.http.routers.t1.rule: Host(`${T1_HOST:-t1.localhost}`)
+      traefik.http.routers.t1.entrypoints: web
+      traefik.http.services.t1.loadbalancer.server.port: "8080"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      # On BOTH networks: reachable by Traefik, and able to reach Postgres.
+      - edge
+      - data
+
+volumes:
+  pg-data:
+
+networks:
+  # Public-facing side: Traefik ↔ tenants.
+  edge:
+  # Private side: tenants ↔ Postgres. Traefik is deliberately NOT here.
+  data:
+    internal: true

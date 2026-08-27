@@ -1,9 +1,13 @@
-# Secrets, logs, state
+# Secrets — real values never belong in the repo; only .env.example is tracked.
+.env
+.env.*
+!.env.example
 *.local.json
-.env.local
-.env.*.local
+
+# Runtime state
 logs/
 volumes/
+acme.json
 *.sqlite
 *.sqlite-shm
 *.sqlite-wal

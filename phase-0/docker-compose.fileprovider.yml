@@ -1,0 +1,27 @@
+# LOCAL DEV ONLY — static routing when Traefik cannot reach the Docker daemon.
+#
+#   docker compose -f docker-compose.yml -f docker-compose.fileprovider.yml up -d
+#
+# Docker Desktop for Windows can refuse the /var/run/docker.sock bind mount
+# ("Allow the default Docker socket to be used" disabled), which leaves Traefik's
+# docker provider unable to read container labels and every request 404s. On a
+# Linux host the socket works natively and this overlay is unnecessary.
+#
+# The label-based docker provider in docker-compose.yml stays the REAL mechanism:
+# it is what lets the control plane add a tenant in Phase 1 by simply starting a
+# labelled container. Routes here are static and must be edited by hand, so keep
+# this file in sync only for local experiments.
+name: zuloone-phase0
+
+services:
+  traefik:
+    command:
+      # Docker provider dropped entirely — the daemon is unreachable in this mode.
+      - --providers.file.directory=/etc/traefik/dynamic
+      - --providers.file.watch=true
+      - --entrypoints.web.address=:80
+      - --api.dashboard=true
+      - --log.level=INFO
+      - --accesslog=true
+    volumes:
+      - ./traefik/dynamic:/etc/traefik/dynamic:ro
