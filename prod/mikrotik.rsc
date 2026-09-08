@@ -200,6 +200,42 @@ add chain=forward action=drop protocol=tcp \
     comment="ZuloOne guard: tenant reachable only via Cloudflare"
 
 # ---------------------------------------------------------------------------
+# 4.1 The control plane — a SECOND entry point, on its own port
+# ---------------------------------------------------------------------------
+# ON THE CORE ROUTER, like section 3. `cp.zulo.one` gets its own Cloudflare
+# Origin Rule pointing at port 8444, and that is dst-nat'd straight to zo-cp-1.
+#
+# Why not route it through Traefik with the tenants: zo-cp-1 is in the CORE
+# subnet, the same side of this router as its own gateway, so the reply is
+# symmetric and needs no src-nat — unlike the tenant path (see section 3). Sending
+# it through zo-app-1 instead would mean the operator's bearer token crossing the
+# router in clear on the way to 10.10.0.200, and would put the panel's traffic on
+# the same host as customer databases, which §12 of the design doc asks it not to
+# be.
+#
+# The control plane serves TLS itself, using the same Cloudflare Origin CA
+# certificate, so there is no second Traefik here and Full (strict) is satisfied.
+#
+# Cloudflare Access sits in front of cp.zulo.one. That is what authenticates
+# operators on this path; the panel additionally verifies the assertion
+# cryptographically and checks the address against its own allowlist.
+
+/ip firewall nat
+add chain=dstnat action=dst-nat protocol=tcp dst-port=8444 \
+    in-interface-list=WAN src-address-list=cloudflare \
+    to-addresses=10.10.0.200 to-ports=8443 \
+    comment="ZuloOne control plane (Cloudflare only, origin port 8444)"
+
+# Guard, as for the tenants. Worth MORE here than there: with no src-nat on this
+# path the true source is still visible at the forward chain, so this rule does
+# what it says rather than matching an address of our own.
+/ip firewall filter
+add chain=forward action=drop protocol=tcp \
+    dst-address=10.10.0.200 dst-port=8443 \
+    src-address-list=!cloudflare \
+    comment="ZuloOne guard: control plane reachable only via Cloudflare"
+
+# ---------------------------------------------------------------------------
 # 5. Inter-subnet policy — default deny between tiers
 # ---------------------------------------------------------------------------
 # The rule that matters: nothing from the internet ever reaches either database
