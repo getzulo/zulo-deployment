@@ -95,6 +95,24 @@ services:
       # TLS terminates at Traefik, so Core sees plain HTTP. Without this its
       # HTTPS redirect bounces back through the proxy forever.
       ZuloOne__BehindReverseProxy: "true"
+      # Behind Cloudflare, X-Forwarded-For does NOT hold the client. Traefik does
+      # not trust inbound X-Forwarded-* by default, so it discards Cloudflare's
+      # value and substitutes its own TCP peer — which, with the entry point on
+      # the core router, is that router's transit address for every request from
+      # everywhere. Measured on this stand: `X-Forwarded-For: 10.255.0.1`, one
+      # entry, no chain.
+      #
+      # The only place that surfaces is MetaSessions, which records the address
+      # of every login — the field an administrator reads to notice a login from
+      # somewhere it should not be coming from. Identical for all of them, and
+      # nothing else looks wrong.
+      #
+      # CF-Connecting-IP is a single address, always the real client, and
+      # Cloudflare overwrites whatever the caller sent. Trustworthy only because
+      # the origin is unreachable except through Cloudflare — which is what the
+      # router's source restriction buys, and why removing it breaks more than
+      # it appears to.
+      ZuloOne__ForwardedForHeader: CF-Connecting-IP
       #
       # Workspace__Path is DELIBERATELY ABSENT and must stay that way.
       # WorkspaceSyncService is registered unconditionally and also reads the
