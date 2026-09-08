@@ -136,31 +136,51 @@ add list=cloudflare comment="Cloudflare edge" address=131.0.72.0/22
 # entry point to keep track of.
 
 # --- on the CORE router (10.10.0.1, WAN 162.55.72.116) ---------------------
+#
+# ### The external port is 8443, not 443
+#
+# 80 and 443 on this router are already forwarded elsewhere. Cloudflare's
+# **Origin Rules -> Destination Port** (available on the Free plan) sends the
+# origin connection to a port of your choosing while the client still uses 443,
+# so the public address stays `https://rms.zulo.one` with no port in it.
+#
+#   browser :443 -> Cloudflare edge -> 162.55.72.116:8443 -> 10.10.1.220:443
+#
+# Note the asymmetry in the rule below: `dst-port=8443` is what arrives from
+# Cloudflare, `to-ports=443` is what Traefik listens on. Traefik knows nothing
+# about 8443 and needs no change.
+#
+# There is deliberately NO port 80 rule. **SSL/TLS -> Edge Certificates ->
+# Always Use HTTPS** makes Cloudflare answer plain HTTP with a 301 at the edge,
+# so it never reaches the origin at all. Traefik's own web->websecure redirect
+# stays configured and simply never fires — harmless, and worth keeping for the
+# day something reaches it directly.
+
 /ip firewall nat
-add chain=dstnat action=dst-nat protocol=tcp dst-port=80 \
-    in-interface-list=WAN src-address-list=cloudflare \
-    to-addresses=10.10.1.220 to-ports=80 \
-    comment="ZuloOne tenant HTTP (Cloudflare only)"
-add chain=dstnat action=dst-nat protocol=tcp dst-port=443 \
+add chain=dstnat action=dst-nat protocol=tcp dst-port=8443 \
     in-interface-list=WAN src-address-list=cloudflare \
     to-addresses=10.10.1.220 to-ports=443 \
-    comment="ZuloOne tenant HTTPS (Cloudflare only)"
+    comment="ZuloOne tenant HTTPS (Cloudflare only, origin port 8443)"
 
 # Return path. Masquerade picks whichever address core uses toward the app
 # subnet, so this needs no editing if the transit addressing changes.
 # It matches only the connections dst-nat just rewrote — src-address-list is
 # still `cloudflare` at this point, because dst-nat changes the destination and
-# leaves the source alone.
+# leaves the source alone. dst-port is 443 here: this rule runs AFTER the
+# translation above.
 add chain=srcnat action=masquerade protocol=tcp \
-    dst-address=10.10.1.220 dst-port=80,443 src-address-list=cloudflare \
+    dst-address=10.10.1.220 dst-port=443 src-address-list=cloudflare \
     comment="ZuloOne tenant: return path (see section 3)"
 
 # ---------------------------------------------------------------------------
 # 4. Forward filter — belt and braces
 # ---------------------------------------------------------------------------
-# The NAT rules above already gate on source, so this is redundant by design.
+# The NAT rule above already gates on source, so this is redundant by design.
 # It exists because a future NAT rule added for some other purpose could
 # accidentally expose the same host, and this rule would still catch it.
+#
+# `dst-port=443`, not 8443: the forward chain sees the packet after dst-nat has
+# rewritten it, so by this point it is addressed to 10.10.1.220:443.
 #
 # ON THE CORE ROUTER ONLY. After the src-nat above, traffic arriving at the app
 # router carries core's address, not Cloudflare's — so this same rule installed
@@ -175,7 +195,7 @@ add chain=srcnat action=masquerade protocol=tcp \
 
 /ip firewall filter
 add chain=forward action=drop protocol=tcp \
-    dst-address=10.10.1.220 dst-port=80,443 \
+    dst-address=10.10.1.220 dst-port=443 \
     src-address-list=!cloudflare \
     comment="ZuloOne guard: tenant reachable only via Cloudflare"
 
@@ -378,25 +398,48 @@ add name=cf-refresh policy=read,write,test,policy dont-require-permissions=no so
 #     comment="Refresh Cloudflare edge ranges"
 
 # ---------------------------------------------------------------------------
-# 8. Verify
+# 8. Verify — and how to read a failure
 # ---------------------------------------------------------------------------
-# Count the prefixes (expect 15):
+# Count the prefixes (expect 15). An EMPTY list is the most common reason
+# nothing works: src-address-list=cloudflare then matches nothing, dst-nat never
+# fires, the packet is dropped, and Cloudflare reports 522:
 #   :put [:len [/ip firewall address-list find list="cloudflare"]]
+#
+# Does the rule actually match? A zero packet counter means it never fired, and
+# that is a different problem from a rule that fired and failed:
+#   /ip firewall nat print stats where comment~"ZuloOne"
+#   /ip firewall filter print stats where comment~"ZuloOne"
+#
+# Does the interface list exist? `in-interface-list=WAN` silently matches nothing
+# if it does not:
+#   /interface list member print
 #
 # Watch translations arrive while you load the site:
 #   /ip firewall connection print where dst-address~":443"
 #
+# ### Reading Cloudflare's error codes — each one points somewhere different
+#
+#   521  the origin REFUSED the connection. Cloudflare reached the address and
+#        something sent RST. Usually: no dst-nat rule for that port at all.
+#   522  Cloudflare sent SYN and got silence. Usually: the rule exists but does
+#        not match (empty address list, wrong interface list, wrong router), or
+#        the return path is missing — see section 3.
+#   525  TLS handshake failed. The port is reaching something that does not
+#        speak TLS, e.g. dst-nat pointed at 80 instead of 443.
+#   526  the origin certificate is not trusted. Under Full (strict) this is the
+#        placeholder cert still in place, or one whose SAN omits the hostname.
+#
 # Then, from any machine OUTSIDE Cloudflare, prove the origin is closed:
-#   curl -m 5 -sk https://162.55.72.116/health    # must TIME OUT
-#   curl -m 5 -sk https://46.225.194.115/health   # must TIME OUT — the app
-#                                                 # router's WAN is not the entry
-#                                                 # point, and must not become one
+#   curl -m 5 -sk https://162.55.72.116:8443/health   # must TIME OUT
+#   curl -m 5 -sk https://46.225.194.115/health       # must TIME OUT — the app
+#                                                     # router's WAN is not the
+#                                                     # entry point
 # If either answers, X-Forwarded-For is forgeable and the lockdown has failed.
 #
 # Then prove the return path, which dst-nat alone would leave broken:
 #   curl -sv https://t1.zulo.one/health 2>&1 | grep -i 'connected to'
-# A timeout here while the router shows packets on the dst-nat counter is the
-# asymmetric-routing failure from section 3 — the src-nat rule is missing.
+# A 522 while the dst-nat counter is climbing is the asymmetric-routing failure
+# from section 3 — the src-nat rule is missing.
 #
 # --- and prove you did not break the database while closing things down ------
 # Section 5 turns a fully open network into a default-deny one, so the risk is
