@@ -14,6 +14,27 @@
 # switch), so treat the values below as a starting point and tighten them against
 # what the control plane actually calls — `docker logs` on this container shows
 # every refused request, which is the fastest way to find out.
+#
+# MEASURED against this configuration on 2026-09-08, because the flag names do not
+# say what they cover:
+#
+#   POST /containers/{id}/exec   201  — ALLOWED. `EXEC: 0` does not cover exec
+#                                       CREATION; that falls under CONTAINERS+POST.
+#   POST /exec/{id}/start        403  — refused, which is what makes the above
+#                                       inert: the object cannot be run, so there
+#                                       is no shell into a tenant.
+#   POST /containers/prune       200  — ALLOWED, and it deletes stopped containers,
+#                                       i.e. suspended tenants. Recoverable — the
+#                                       database survives and the registry can
+#                                       rebuild the container — but it presents as
+#                                       a tenant that vanished.
+#   GET  /volumes                403  — refused. Tenant data-protection key rings
+#                                       live in volumes.
+#   GET  /secrets                403  — refused.
+#   GET  /images, /networks, /info  200 — allowed, needed for provisioning.
+#
+# The residual risk is prune. Closing it needs a filter finer than one flag per
+# group; until then, whatever can reach 2375 can remove stopped containers.
 name: zuloone-prod
 
 services:
@@ -53,4 +74,21 @@ services:
       # so it is not exposed to the internet.
       - "10.10.1.220:2375:2375"
     networks:
-      - edge
+      # ITS OWN network, deliberately NOT `edge`.
+      #
+      # On the edge network this container sits on the same bridge as every
+      # tenant, and container-egress.sh returns same-bridge traffic unconditionally
+      # (`-i zo-edge0 -o zo-edge0 -j RETURN`) because Traefik has to reach the
+      # tenants. A tenant could therefore open the Docker API on this container's
+      # bridge address directly — past the host-input chain, past the router rule,
+      # past every control that exists — and the Docker API has no authentication,
+      # so that is root on the host that runs every customer's database.
+      #
+      # The control plane reaches it on 10.10.1.220:2375, the published host port.
+      # It has no reason to share a network with anything.
+      - socket
+
+networks:
+  socket:
+    driver: bridge
+
