@@ -136,6 +136,25 @@ add chain=forward action=accept protocol=tcp \
     src-address=10.10.2.210 dst-address=10.10.1.210 dst-port=5432 \
     comment="ZuloOne patroni: replication pg-2 -> pg-1"
 
+# pgBackRest moves WAL segments and backup files between the two data nodes over
+# SSH, so port 22 has to be open BETWEEN them — the "admin SSH" rule below only
+# covers core -> everywhere and does not help here.
+#
+# Both directions, for the same reason as replication: the repository lives on
+# zo-pg-2, the leader pushes to it, and which node leads changes. Whichever one is
+# elected needs to reach the other.
+#
+# Leave this out and `archive_command` starts failing the moment these rules are
+# imported. WAL then piles up in pg_wal until archive-push-queue-max, after which
+# archiving is skipped silently and PITR is gone. check-cluster.sh catches it
+# within five minutes; nothing else will.
+add chain=forward action=accept protocol=tcp \
+    src-address=10.10.1.210 dst-address=10.10.2.210 dst-port=22 \
+    comment="ZuloOne pgbackrest: SSH pg-1 -> pg-2"
+add chain=forward action=accept protocol=tcp \
+    src-address=10.10.2.210 dst-address=10.10.1.210 dst-port=22 \
+    comment="ZuloOne pgbackrest: SSH pg-2 -> pg-1"
+
 # etcd holds the Patroni leader key. All three nodes sit in DIFFERENT subnets, so
 # every quorum message crosses this router: 2380 between peers, 2379 for clients.
 #
@@ -286,3 +305,22 @@ add name=cf-refresh policy=read,write,test,policy dont-require-permissions=no so
 # Then, from any machine OUTSIDE Cloudflare, prove the origin is closed:
 #   curl -m 5 -sk https://<public-ip>/health     # must TIME OUT
 # If that answers, X-Forwarded-For is forgeable and the lockdown has failed.
+#
+# --- and prove you did not break the database while closing things down ------
+# Section 5 turns a fully open network into a default-deny one, so the risk is
+# the mirror image of the usual: not that something is still reachable, but that
+# something you depend on quietly is not. Run this on either data node:
+#
+#   sudo /usr/local/bin/check-cluster.sh
+#
+# Everything must stay green. The two that fail first if a rule is missing:
+#   * "pgbackrest check FAILED"      -> SSH between the data nodes is blocked
+#   * "zo-pg-N: state ... not streaming" or "etcd: only N/3 healthy"
+#                                    -> replication or the etcd quorum is blocked
+#
+# Then force the cluster to use the paths a steady state never exercises:
+#   sudo -u postgres patronictl -c /etc/patroni/config.yml switchover zuloone --force
+#   sudo /usr/local/bin/check-cluster.sh      # on BOTH nodes, still green?
+#
+# A switchover is the only way to test the reverse-direction rules. Skip it and
+# you find out during a real failover instead.
