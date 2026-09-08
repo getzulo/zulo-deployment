@@ -31,6 +31,37 @@
 # or replace `in-interface-list=WAN` below with `in-interface=ether1`.
 
 # ---------------------------------------------------------------------------
+# 1.1 WHICH ROUTER — this is not one device
+# ---------------------------------------------------------------------------
+# Measured from the hosts on 2026-09-08 (traceroute + an egress-IP probe from
+# each VM), NOT assumed:
+#
+#   subnet            gateway     egresses as        role
+#   core 10.10.0.0/24 10.10.0.1   162.55.72.116      hub, transit 10.255.0.1
+#   app  10.10.1.0/24 10.10.1.1   46.225.194.115     spoke
+#   data 10.10.2.0/24 10.10.2.1   162.55.72.114      spoke, transit 10.255.0.3
+#
+#   app -> data traverses THREE routers: 10.10.1.1, 10.255.0.1, 10.255.0.3.
+#
+# Two consequences, and neither is obvious from the rules themselves:
+#
+#   * Sections 3, 4 and 6 (dst-nat and the tenant guard) belong ONLY on the APP
+#     router, because that is the one whose WAN address the wildcard points at.
+#     Importing them on core or data creates rules that can never match — and a
+#     rule that never matches looks identical to a rule that is working.
+#
+#   * Section 5 (the inter-tier matrix) is written as if one device sees all
+#     inter-subnet traffic. It does not. A packet from app to data passes three
+#     routers, so a `drop` on any ONE of them stops it while the other two show
+#     nothing. Import section 5 on all three, or the deny is partial in a way
+#     that is very hard to see; verify with the checks in section 8 rather than
+#     by reading the rule lists.
+#
+# Confirm the WAN address on the app router before pointing DNS at it. The
+# figures above are what each subnet NATs OUT to; inbound normally arrives on
+# the same address, but that is a property of your router config, not a law.
+
+# ---------------------------------------------------------------------------
 # 2. Cloudflare edge ranges (IPv4)
 # ---------------------------------------------------------------------------
 # Captured from https://www.cloudflare.com/ips-v4 on 2026-09-06 — 15 prefixes.
