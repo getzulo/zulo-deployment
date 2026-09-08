@@ -1,0 +1,13 @@
+# These scripts run on Linux. On Windows with core.autocrlf=true (the default for
+# many installs) a checkout rewrites them to CRLF, and a commit from that machine
+# can put CRLF into the index. The interpreter then reads "#!/usr/bin/env bash\r"
+# and the failure is `bad interpreter: /usr/bin/env bash^M` — or, for an
+# entrypoint, `not found` for a file that is plainly there. Neither message
+# mentions line endings.
+*.sh text eol=lf
+Dockerfile text eol=lf
+*.env.example text eol=lf
+
+# Read by containers and by RouterOS; keep them byte-stable across platforms.
+*.yml text eol=lf
+*.yaml text eol=lf
