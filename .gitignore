@@ -4,6 +4,14 @@
 !.env.example
 *.local.json
 
+# TLS material. prod/certs/ holds the Cloudflare Origin CA key, which is shown
+# exactly once at issuance and is a full origin-impersonation credential.
+certs/
+*.key
+*.pem
+*.pfx
+*.p12
+
 # Runtime state
 logs/
 volumes/

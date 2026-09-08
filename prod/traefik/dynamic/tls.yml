@@ -1,0 +1,32 @@
+# TLS store for the Cloudflare Origin certificate.
+#
+# Loaded by the file provider (--providers.file.directory=/etc/traefik/dynamic).
+# There is no ACME in production: this certificate comes from Cloudflare's
+# Origin CA, is valid for 15 years, and is trusted ONLY by Cloudflare — which is
+# exactly right when every request arrives through the proxy.
+#
+# Issue it once in the dashboard (SSL/TLS → Origin Server → Create Certificate)
+# with hostnames `zulo.one` and `*.zulo.one`, then drop the PEM and the key into
+# ../certs/ as origin.pem / origin.key. One wildcard cert covers every current
+# and future tenant, so adding a tenant needs no certificate work at all.
+#
+# `defaultCertificate` is what makes that work: tenant routers set tls: "true"
+# with no certresolver and no per-router domains, so Traefik falls back to this
+# store for all of them.
+
+tls:
+  stores:
+    default:
+      defaultCertificate:
+        certFile: /certs/origin.pem
+        keyFile: /certs/origin.key
+
+  certificates:
+    - certFile: /certs/origin.pem
+      keyFile: /certs/origin.key
+
+  options:
+    default:
+      # Cloudflare speaks TLS 1.2+ to origins; there is no legacy client on this
+      # hop, so there is no reason to accept anything older.
+      minVersion: VersionTLS12

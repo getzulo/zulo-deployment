@@ -1,0 +1,127 @@
+# Production topology: Cloudflare (proxied) → MikroTik → Traefik → tenant,
+# with a replicated Postgres on the data subnet. See ARCHITECTURE.md.
+#
+# This is a STANDALONE file, not an overlay on ../phase-0/docker-compose.yml.
+# Compose can override a service but cannot delete one, and production drops two
+# things phase-0 defines: the bundled `postgres` service and the internal `data`
+# network. Overlaying would leave both running.
+#
+#   docker compose --env-file .env up -d
+#
+# Differences from phase-0 worth knowing:
+#   * No ACME anywhere. The origin certificate is a static 15-year Cloudflare
+#     Origin CA cert, supplied through the file provider (traefik/dynamic/tls.yml).
+#   * No `data` network. The database is off-box, reached over the internet, so
+#     the tenant needs ordinary outbound — which the `edge` bridge already gives.
+#   * Cloudflare's SSL/TLS mode MUST be "Full (Strict)". On "Flexible" Cloudflare
+#     talks plain HTTP to the origin, Traefik bounces it to HTTPS, the client
+#     comes back through Cloudflare on :80 again — an infinite redirect loop.
+name: zuloone-prod
+
+services:
+  # ------------------------------------------------------------- ingress ---
+  traefik:
+    image: traefik:v3.3
+    restart: unless-stopped
+    command:
+      # Tenant routers still come from container labels...
+      - --providers.docker=true
+      - --providers.docker.exposedByDefault=false
+      - --providers.docker.network=zuloone-prod_edge
+      # ...while the file provider supplies the TLS store. Both run together;
+      # this is the only reason the file provider is enabled in production.
+      - --providers.file.directory=/etc/traefik/dynamic
+      - --providers.file.watch=true
+      - --entrypoints.web.address=:80
+      - --entrypoints.web.http.redirections.entrypoint.to=websecure
+      - --entrypoints.web.http.redirections.entrypoint.scheme=https
+      - --entrypoints.websecure.address=:443
+      - --api.dashboard=true
+      # Without `insecure` nothing listens on :8080 and the loopback mapping
+      # below is dead. It is unauthenticated, which is why it is bound to
+      # 127.0.0.1 and reached only over an SSH tunnel — never publish it.
+      - --api.insecure=true
+      - --log.level=INFO
+      - --accesslog=true
+    ports:
+      - "80:80"
+      - "443:443"
+      # Loopback only. Reach it with `ssh -L 8090:127.0.0.1:8090 <host>`.
+      - "127.0.0.1:${TRAEFIK_DASHBOARD_PORT:-8090}:8080"
+    volumes:
+      # Read-only: Traefik only WATCHES container labels.
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - ./traefik/dynamic:/etc/traefik/dynamic:ro
+      - ./certs:/certs:ro
+    networks:
+      - edge
+
+  # -------------------------------------------------------------- tenant ---
+  tenant-t1:
+    image: ${ZULOONE_IMAGE:?set ZULOONE_IMAGE, e.g. 10.10.0.210:5000/zuloone-core:2026.9.0}
+    restart: unless-stopped
+    environment:
+      Database__Provider: PostgreSql
+      # PG_HOSTS lists BOTH cluster nodes, comma-separated. Npgsql 6+ probes
+      # pg_is_in_recovery() and hands out connections only from the primary
+      # (`Target Session Attributes=Primary`), rechecking every 10 s — so after a
+      # Patroni failover this string finds the new leader with no VIP, no
+      # HAProxy, and no ESXi vSwitch changes. See ARCHITECTURE.md §4.
+      #
+      # Npgsql does NOT retry a failed command on the other host: statements in
+      # flight during a failover throw, and this container restarts. That is the
+      # expected behaviour, not a misconfiguration.
+      #
+      # PG_SSL_MODE: check with `psql -c "SHOW ssl;"` on the primary.
+      # Require — server has ssl=on. Disable — it does not. Never `Prefer`:
+      # it falls back to plaintext silently, so you never learn which you got.
+      ConnectionStrings__DefaultConnection: >-
+        Host=${PG_HOSTS:?set PG_HOSTS};Port=${PG_PORT:-5432};Database=${T1_DB_NAME:?set T1_DB_NAME};Username=${T1_DB_USER:?set T1_DB_USER};Password=${T1_DB_PASSWORD:?set T1_DB_PASSWORD};SSL Mode=${PG_SSL_MODE:-Require};Trust Server Certificate=true;Target Session Attributes=Primary
+      # Per-tenant key: a token minted for one tenant is meaningless to another.
+      Jwt__SigningKey: ${T1_JWT_KEY:?set T1_JWT_KEY}
+      # TLS terminates at Traefik, so Core sees plain HTTP. Without this its
+      # HTTPS redirect bounces back through the proxy forever.
+      ZuloOne__BehindReverseProxy: "true"
+      #
+      # Workspace__Path is DELIBERATELY ABSENT and must stay that way.
+      # WorkspaceSyncService is registered unconditionally and also reads the
+      # path from MetaSystemSettings['Workspace.Path'] in the database, which is
+      # NOT behind the dev gate. If it ever resolves a path in production, a
+      # watcher exports the whole metadata surface to disk, DELETES orphan files
+      # there, and imports anything edited in that folder back into the live
+      # database. Verify the DB row is absent after any restore from a dev dump.
+      #
+      # ZuloOne__CoreDevelopmentMode is likewise absent: it defaults to false,
+      # which is what installs the global RequireAuthenticatedUser fallback.
+      # Setting it true makes the ENTIRE API anonymous.
+    labels:
+      traefik.enable: "true"
+      traefik.docker.network: zuloone-prod_edge
+      traefik.http.routers.t1.rule: Host(`${T1_HOST:?set T1_HOST, e.g. t1.zulo.one}`)
+      traefik.http.routers.t1.entrypoints: websecure
+      # No certresolver: the default certificate from the file provider's TLS
+      # store serves every tenant, because the Origin CA cert is a wildcard.
+      traefik.http.routers.t1.tls: "true"
+      traefik.http.services.t1.loadbalancer.server.port: "8080"
+    volumes:
+      # Data-protection key ring. Without a volume every restart mints a new
+      # ring and every stored assistant API key becomes unreadable.
+      - dp-keys-t1:/var/zuloone/dp-keys
+    networks:
+      - edge
+
+volumes:
+  dp-keys-t1:
+
+networks:
+  edge:
+    # Both of these are PINNED so the container-egress firewall can reference
+    # them. Compose otherwise names the bridge br-<network-id> and picks a random
+    # 172.17-31 subnet, and a rule pointing at either would silently stop
+    # matching after a `down`/`up` — turning the lockdown into a no-op with no
+    # visible symptom. Change these here and in container-egress.sh together.
+    driver_opts:
+      com.docker.network.bridge.name: zo-edge0
+    ipam:
+      config:
+        - subnet: 172.30.0.0/24

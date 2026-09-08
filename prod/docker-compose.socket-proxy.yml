@@ -1,0 +1,56 @@
+# Docker socket proxy — deploy on zo-app-1, ONLY when the control plane exists.
+#
+#   docker compose -f docker-compose.yml -f docker-compose.socket-proxy.yml up -d
+#
+# The control plane has to create, start and stop tenant containers, which means
+# talking to Docker on this VM. It must NOT be given the raw daemon: the Docker
+# API has no authentication, and anything that can reach it is root here — it can
+# mount the host filesystem into a container and walk out with everything.
+#
+# This proxy sits in front of the socket and answers only the API groups enabled
+# below, refusing the rest with 403. Anticipated by ControlPlane.Deployment.md §12.
+#
+# The whitelist is coarse by design (one flag per API group, plus a single POST
+# switch), so treat the values below as a starting point and tighten them against
+# what the control plane actually calls — `docker logs` on this container shows
+# every refused request, which is the fastest way to find out.
+name: zuloone-prod
+
+services:
+  docker-socket-proxy:
+    image: tecnativa/docker-socket-proxy:0.3.0
+    restart: unless-stopped
+    environment:
+      # --- needed for provisioning ---
+      CONTAINERS: 1        # create, inspect, start, stop, remove, logs
+      IMAGES: 1            # pull the tenant image
+      NETWORKS: 1          # attach the container to the edge network
+      POST: 1              # without this everything is read-only
+      VERSION: 1           # Docker.DotNet negotiates on connect
+      INFO: 1
+      # --- deliberately refused ---
+      EXEC: 0              # would allow arbitrary commands inside any tenant
+      VOLUMES: 0           # tenant data-protection key rings live in volumes
+      SECRETS: 0
+      CONFIGS: 0
+      SWARM: 0
+      NODES: 0
+      PLUGINS: 0
+      SYSTEM: 0            # includes prune, which would delete other people's work
+      AUTH: 0
+      BUILD: 0
+      COMMIT: 0
+      DISTRIBUTION: 0
+      SESSION: 0
+      TASKS: 0
+    volumes:
+      # Read-only mount is not a security boundary on its own — the proxy is.
+      # It only stops the proxy itself from rewriting the socket file.
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    ports:
+      # Bound to this VM's LAN address, not 0.0.0.0: reachable from zo-cp-1
+      # through the router rule, and from nowhere else. There is no NAT for 2375,
+      # so it is not exposed to the internet.
+      - "10.10.1.220:2375:2375"
+    networks:
+      - edge
