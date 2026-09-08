@@ -747,7 +747,9 @@ Your routers already work; this only adds the rules this project needs.
 
 ### 6.1 Edit and import
 
-`prod/mikrotik.rsc` already uses `10.10.1.220` for the tenant host. Confirm the WAN
+`prod/mikrotik.rsc` already uses `10.10.1.220` for the tenant host. Read §1.1 of that
+file first — this network is **three** routers, not one, and each section belongs on a
+specific device. Confirm the WAN
 interface list matches your setup, then import. It creates:
 
 - a `cloudflare` address list — 15 IPv4 prefixes

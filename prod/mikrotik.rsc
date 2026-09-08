@@ -45,10 +45,11 @@
 #
 # Two consequences, and neither is obvious from the rules themselves:
 #
-#   * Sections 3, 4 and 6 (dst-nat and the tenant guard) belong ONLY on the APP
-#     router, because that is the one whose WAN address the wildcard points at.
-#     Importing them on core or data creates rules that can never match — and a
-#     rule that never matches looks identical to a rule that is working.
+#   * Sections 3, 4 and 6 (dst-nat, the return path and the tenant guard) belong
+#     ONLY on the CORE router — 162.55.72.116 is the chosen entry point, and
+#     section 3 explains why that choice needs a src-nat rule the app router
+#     must NOT have. Importing them anywhere else creates rules that can never
+#     match, and a rule that never matches looks exactly like one that works.
 #
 #   * Section 5 (the inter-tier matrix) is written as if one device sees all
 #     inter-subnet traffic. It does not. A packet from app to data passes three
@@ -57,7 +58,7 @@
 #     that is very hard to see; verify with the checks in section 8 rather than
 #     by reading the rule lists.
 #
-# Confirm the WAN address on the app router before pointing DNS at it. The
+# Confirm the WAN address on the core router before pointing DNS at it. The
 # figures above are what each subnet NATs OUT to; inbound normally arrives on
 # the same address, but that is a property of your router config, not a law.
 
@@ -95,9 +96,46 @@ add list=cloudflare comment="Cloudflare edge" address=131.0.72.0/22
 # ---------------------------------------------------------------------------
 # src-address-list=cloudflare is the whole security control: a packet from any
 # other source never gets translated, so it never reaches the VM.
-# Address below is zo-app-1 from ARCHITECTURE.md §3. Change it only if
-# your inventory differs.
+#
+# CHOSEN ENTRY POINT: 162.55.72.116, the CORE router — the same address as
+# gw.okrasheno.com.ua. That is a deliberate decision to have one front door,
+# and it is NOT the app router's own address.
+#
+# ### Why this needs a second NAT rule, and what breaks without it
+#
+# The tenant lives at 10.10.1.220, behind a DIFFERENT router. Measured on the
+# host: `ip route get 1.1.1.1` on zo-app-1 answers `via 10.10.1.1` — it sends
+# every reply through the APP router, which masquerades to 46.225.194.115.
+#
+# So with dst-nat alone:
+#
+#   request   Cloudflare -> 162.55.72.116 (core) -> dst-nat -> zo-app-1
+#   reply     zo-app-1 -> 10.10.1.1 (app) -> src-nat -> 46.225.194.115 -> Cloudflare
+#
+# Cloudflare opened the connection to .116 and the answer arrives from .115, so
+# it discards it. Every request times out, both routers show traffic, and
+# nothing anywhere logs an error. Asymmetric routing, and it is the single most
+# expensive way to get this wrong.
+#
+# The src-nat rule below fixes it by making the reply come back the way the
+# request went: the tenant then sees the connection as coming from the core
+# router and answers to it, so both directions traverse the same device.
+#
+# What that costs: the tenant no longer sees Cloudflare's address. It does not
+# matter — Cloudflare puts the real client in CF-Connecting-IP and
+# X-Forwarded-For, which is what Core reads either way. But it DOES mean the
+# guard in section 4 has to live on core, where the true source is still
+# visible. See the warning there.
+#
+# ### The alternative, for the record
+#
+# Point the wildcard at 46.225.194.115 instead — the app router's own WAN — and
+# both rules below collapse into the dst-nat alone, with no src-nat, no
+# asymmetry and the real source address preserved all the way to the tenant.
+# It is the simpler design; it was not chosen because it means a second public
+# entry point to keep track of.
 
+# --- on the CORE router (10.10.0.1, WAN 162.55.72.116) ---------------------
 /ip firewall nat
 add chain=dstnat action=dst-nat protocol=tcp dst-port=80 \
     in-interface-list=WAN src-address-list=cloudflare \
@@ -108,12 +146,27 @@ add chain=dstnat action=dst-nat protocol=tcp dst-port=443 \
     to-addresses=10.10.1.220 to-ports=443 \
     comment="ZuloOne tenant HTTPS (Cloudflare only)"
 
+# Return path. Masquerade picks whichever address core uses toward the app
+# subnet, so this needs no editing if the transit addressing changes.
+# It matches only the connections dst-nat just rewrote — src-address-list is
+# still `cloudflare` at this point, because dst-nat changes the destination and
+# leaves the source alone.
+add chain=srcnat action=masquerade protocol=tcp \
+    dst-address=10.10.1.220 dst-port=80,443 src-address-list=cloudflare \
+    comment="ZuloOne tenant: return path (see section 3)"
+
 # ---------------------------------------------------------------------------
 # 4. Forward filter — belt and braces
 # ---------------------------------------------------------------------------
 # The NAT rules above already gate on source, so this is redundant by design.
 # It exists because a future NAT rule added for some other purpose could
 # accidentally expose the same host, and this rule would still catch it.
+#
+# ON THE CORE ROUTER ONLY. After the src-nat above, traffic arriving at the app
+# router carries core's address, not Cloudflare's — so this same rule installed
+# there would match EVERY legitimate request and drop the lot, which reads as
+# "the tenant is down" rather than "the firewall is wrong". Here on core it sits
+# before the translation and still sees the true source.
 #
 # ORDER MATTERS. RouterOS evaluates filter rules top to bottom, so this must sit
 # ABOVE any broad accept in the forward chain. Check with `/ip firewall filter
@@ -334,8 +387,16 @@ add name=cf-refresh policy=read,write,test,policy dont-require-permissions=no so
 #   /ip firewall connection print where dst-address~":443"
 #
 # Then, from any machine OUTSIDE Cloudflare, prove the origin is closed:
-#   curl -m 5 -sk https://<public-ip>/health     # must TIME OUT
-# If that answers, X-Forwarded-For is forgeable and the lockdown has failed.
+#   curl -m 5 -sk https://162.55.72.116/health    # must TIME OUT
+#   curl -m 5 -sk https://46.225.194.115/health   # must TIME OUT — the app
+#                                                 # router's WAN is not the entry
+#                                                 # point, and must not become one
+# If either answers, X-Forwarded-For is forgeable and the lockdown has failed.
+#
+# Then prove the return path, which dst-nat alone would leave broken:
+#   curl -sv https://t1.zulo.one/health 2>&1 | grep -i 'connected to'
+# A timeout here while the router shows packets on the dst-nat counter is the
+# asymmetric-routing failure from section 3 — the src-nat rule is missing.
 #
 # --- and prove you did not break the database while closing things down ------
 # Section 5 turns a fully open network into a default-deny one, so the risk is
