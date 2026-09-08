@@ -18,7 +18,7 @@ This file is the *how*, in order, with a checkpoint after every phase.
 | vCenter, permission to create VMs on all three hosts | Phase 1 |
 | Ubuntu Server 26.04 LTS ISO uploaded to a datastore | Phase 1 |
 | MikroTik admin (Winbox or SSH) | Phase 6 |
-| Cloudflare account with `zulo.one` already delegated to its nameservers | Phase 7 |
+| Cloudflare account, and control of the registrar for `zulo.one` (delegation happens in §7.0) | Phase 7 |
 | GitHub access to `getzulo` (runner registration token) | Phase 8 |
 | An SSH public key on your workstation | Phase 2 |
 | Somewhere off-site for backups (second machine or storage box) | Phase 4 |
@@ -734,7 +734,10 @@ ufw's, so `ufw deny` leaves container traffic flowing while reporting the port b
 
 > **Checkpoint 5** — `docker info` works on both as `deploy`;
 > `curl http://10.10.0.210:5000/v2/` from `zo-app-1` returns `{}`;
-> `./container-egress.sh --status` shows four rules.
+> `./container-egress.sh --status` reports `database nodes allowed: 2/2` and lists a
+> populated `ZULOONE-HOST-IN` chain. Both matter: a `MISMATCH` line means only one
+> database node is permitted and tenants will lose the database at the next failover,
+> and a missing host chain means containers can still reach every service on this VM.
 
 ---
 
@@ -786,26 +789,67 @@ must be able to follow a failover onto it.
 
 ## Phase 7 — Cloudflare
 
+### 7.0 Delegate the domain first
+
+Everything below assumes Cloudflare is authoritative for `zulo.one`. Check before you
+start, because every other step silently does nothing until this is true:
+
+```bash
+dig +short NS zulo.one          # must answer *.ns.cloudflare.com
+```
+
+If it answers something else — `domaincontrol.com` is GoDaddy, `awsdns` is Route 53 —
+then: **Cloudflare → Add a site → `zulo.one` → Free**, copy the two nameservers it
+assigns, and replace the nameservers at the registrar. Propagation is usually an hour or
+two and can take a day; Cloudflare e-mails when it completes.
+
+`getzulo.com` is a separate matter and does **not** belong on this origin. It is a
+marketing and documentation site: put it on Cloudflare Pages, where it costs nothing,
+needs no origin certificate, and — the actual reason — keeps a public static site off
+the machine that runs customer databases.
+
 ### 7.1 DNS
 
 **DNS → Records → Add record**
 
-| Field | Value |
-|---|---|
-| Type | `A` |
-| Name | `*` |
-| IPv4 address | your public IP |
-| Proxy status | **Proxied** (orange cloud) |
-| TTL | Auto |
+| Type | Name | Content | Proxy |
+|---|---|---|---|
+| `A` | `*` | your public IP | **Proxied** |
+| `A` | `@` | `192.0.2.1` | **Proxied** |
+| `A` | `www` | `192.0.2.1` | **Proxied** |
 
-Add a second `A` for `@` if the apex should resolve.
+The wildcard is what makes a new tenant need no DNS change at all. Wildcards can be
+proxied on **every** Cloudflare plan. Do **not** add per-tenant records; that
+reintroduces exactly the manual step the wildcard removes.
 
-Wildcard records can be proxied on **every** Cloudflare plan — this is what makes a new
-tenant need no DNS change at all. Do **not** add per-tenant records; that reintroduces
-exactly the manual step the wildcard removes.
+`192.0.2.1` is TEST-NET-1 and is not routable anywhere. Paired with a **Rules →
+Redirect Rule** sending `zulo.one` and `www.zulo.one` to the marketing site, the
+redirect is answered at Cloudflare's edge and never reaches your origin. Point the apex
+at the real IP instead and it lands on Traefik, which has no router for it and answers
+404 — a poor greeting for the name people type by hand.
 
-**Reserve slugs.** `admin`, `www`, `api`, `app` should never be handed out as tenant
-names, or a tenant will shadow something you need later.
+**Proxy must be on for all of them.** Grey-cloud any one and it publishes your origin
+IP, at which point the whole Cloudflare-only restriction on the router is decoration.
+
+Note what the wildcard does NOT do: it answers for *every* name, so
+`whatever.zulo.one` resolves whether or not that tenant exists, and Traefik returns 404
+rather than DNS returning NXDOMAIN. That is fine — but it means DNS reserves nothing.
+
+### 7.1.1 Reserved names are enforced in code, not here
+
+There is no way to exempt a name from a wildcard. If a customer can choose their own
+slug, then without a check they can choose `admin` and take `admin.zulo.one`, or `cp`
+and take the control plane's own address.
+
+That check lives in `ZuloOne.ControlPlane.Provisioning.ReservedSlugs` — 143 names
+covering infrastructure, resolver and mail conventions, environment names, brand terms,
+anything resembling authentication or payment, and the RFC 2142 abuse addresses. It also
+refuses the `xn--` punycode prefix outright, because `xn--dmin-7na` passes any ASCII
+slug pattern and renders as "аdmin" with a Cyrillic а.
+
+To add names without cutting a release, extend `Fleet:AdditionalReservedSlugs` in the
+control plane's configuration. That list can only **add** — the compiled-in baseline is
+not shortenable from configuration, so a mistyped section cannot give away `admin`.
 
 ### 7.2 Encryption mode — get this one right
 
@@ -820,6 +864,9 @@ This is not a preference:
   an attacker's.
 - **Full (Strict)** — encrypted and validated. Cloudflare trusts its own Origin CA, so
   the certificate from §7.3 satisfies it.
+
+Universal SSL covers `zulo.one` and `*.zulo.one` — the apex and **one** label. A
+name like `a.b.zulo.one` gets no certificate from it.
 
 ### 7.3 Origin certificate
 
