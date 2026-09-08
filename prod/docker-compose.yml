@@ -21,7 +21,20 @@ name: zuloone-prod
 services:
   # ------------------------------------------------------------- ingress ---
   traefik:
-    image: traefik:v3.3
+    # PINNED, and the floor matters. Traefik up to at least v3.3 asks the Docker
+    # daemon for API version 1.24; Docker 29 REMOVED everything below 1.40, so the
+    # provider gets
+    #
+    #   client version 1.24 is too old. Minimum supported API version is 1.40
+    #
+    # and never reads a single container label. The failure is quiet in the way
+    # that costs the most time: both containers run, the tenant's healthcheck is
+    # green, :443 accepts TCP — there is simply no router to match, so every
+    # request dies right after the connection is established. Only Traefik's log
+    # names the cause, and DOCKER_API_VERSION does not help because that Traefik
+    # sets the version in code and ignores the environment. v3.7 negotiates,
+    # which was verified here by running it with no such variable at all.
+    image: traefik:v3.7.13
     restart: unless-stopped
     command:
       # Tenant routers still come from container labels...
