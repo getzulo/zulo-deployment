@@ -1,0 +1,76 @@
+# The control plane on zo-cp-1.
+#
+# This file exists because until now it did not. The panel was started once with a
+# bare `docker run`, kept alive only by `restart: unless-stopped`, with no compose
+# file and no systemd unit anywhere — so the exact command that produced it lived
+# in one place: the running container. Removing it would have meant reconstructing
+# the flags from `docker inspect`, if anyone thought to look before pruning.
+#
+#   cd /opt/zuloone
+#   CP_VERSION=2026.9.8 docker compose up -d
+#
+# The registry is plain HTTP on the LAN, so /etc/docker/daemon.json on this host
+# lists it under insecure-registries. Nothing here is published to the internet:
+# 8443 is bound to the LAN address the router forwards to, and 5099 to loopback
+# only, which is the break-glass path reached over an SSH tunnel.
+
+services:
+  controlplane:
+    # Pinned, never `latest`. The panel can recreate every tenant in the fleet, so
+    # "whatever was newest when it restarted" is not an acceptable answer to what
+    # is running. CP_VERSION is required: an unset variable must fail loudly rather
+    # than silently resolve to an empty tag.
+    image: 10.10.0.210:5000/zuloone-controlplane:${CP_VERSION:?set CP_VERSION to the tag you mean to run}
+    container_name: zuloone-controlplane
+    restart: unless-stopped
+
+    # Every secret the panel holds: the registry connection, the tenant-database
+    # admin password, the Cloudflare Access audience, the break-glass operator
+    # hash, the Patroni credentials. Root-owned 0600 on the host, never in git.
+    env_file:
+      - ./cp.env
+
+    environment:
+      # THE line that was lost. The image defaults to "http://+:8080;http://+:5099"
+      # and deliberately knows nothing about certificates — which port is fronted,
+      # and with whose key, is a property of the deployment, not of the build.
+      #
+      # The original container carried the https endpoint on its `docker run`
+      # command line and nowhere else, so recreating it from cp.env alone produced
+      # a container that passed its own health check on 5099 while answering
+      # nothing at all on 8443. That is precisely the failure this file exists to
+      # make impossible, and it happened once during the very change that added it.
+      #
+      # 8080 is dropped: nothing publishes it, and a listener nobody reaches is a
+      # listener nobody notices is wrong.
+      ASPNETCORE_URLS: "http://+:5099;https://+:8443"
+
+    # Matches the image's own APP_UID. Stated here as well because the certificate
+    # directory below is readable only by this gid — if the two ever drift, Kestrel
+    # fails to open its key and the container exits before it logs anything useful.
+    user: "1654"
+
+    ports:
+      # The Cloudflare path. Bound to the LAN address specifically, NOT 0.0.0.0:
+      # the router forwards 8444 here, and there is no reason for this to answer on
+      # any other interface the host may acquire.
+      - "10.10.0.200:8443:8443"
+      # The break-glass path, loopback only. Reached with
+      # `ssh -L 5099:127.0.0.1:5099 zo-cp-1` when Cloudflare is what is broken.
+      - "127.0.0.1:5099:5099"
+
+    volumes:
+      # Cloudflare Origin CA certificate and key, served directly by Kestrel — TLS
+      # is NOT terminated by a proxy on this host. Mode 0710 with gid 1654 on the
+      # host: the container can traverse in, and nothing else on the box can list
+      # the directory.
+      - ./certs:/certs:ro
+
+    # No healthcheck stanza: the image carries its own, and restating it here is
+    # one more place for the two to disagree.
+
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
