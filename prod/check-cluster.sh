@@ -245,6 +245,19 @@ publish_report() {
   local status
   case "$worst" in 0) status=healthy ;; 1) status=degraded ;; *) status=broken ;; esac
 
+  # The pgBackRest inventory rides along with the health report.
+  #
+  # Those backups are the fleet's actual disaster recovery and they were invisible
+  # from the panel — it could show per-tenant dumps and nothing about the cluster
+  # they all sit on. Sending it here rather than building a channel to this host
+  # costs one command: the node is already talking every five minutes, and it is
+  # the only machine that can answer.
+  #
+  # Empty object on failure, never a missing key: the panel must be able to tell
+  # "no backups" from "could not ask".
+  local backups
+  backups="$(sudo -u postgres pgbackrest --stanza="$STANZA" --output=json info 2>/dev/null || echo '[]')"
+
   # JSON assembled by python3 rather than by hand: the report contains newlines,
   # quotes and the odd backslash from a path, and hand-rolled escaping here would
   # fail on exactly the reports that matter most. python3 is already a hard
@@ -255,12 +268,17 @@ publish_report() {
   # request never leaves the 10.x network. Forging it would require already being
   # positioned to redirect internal traffic, at which point a faked health report
   # is far from the worst available move.
-  if ! NODE="$(hostname)" STATUS="$status" python3 -c '
+  if ! NODE="$(hostname)" STATUS="$status" BACKUPS="$backups" python3 -c '
 import datetime, json, os, sys
+try:
+    backups = json.loads(os.environ.get("BACKUPS") or "[]")
+except ValueError:
+    backups = []
 sys.stdout.write(json.dumps({
     "node": os.environ["NODE"],
     "status": os.environ["STATUS"],
     "report": sys.stdin.read(),
+    "backups": backups,
     "checkedAt": datetime.datetime.now(datetime.timezone.utc).isoformat(),
 }))' <<<"$report" \
       | curl -sk --fail-with-body --max-time 10 -o /dev/null \
