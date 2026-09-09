@@ -65,6 +65,11 @@ services:
       # host: the container can traverse in, and nothing else on the box can list
       # the directory.
       - ./certs:/certs:ro
+      # Tenant snapshots (pg_dump -Fc). A NAMED volume, not a bind: these must
+      # survive a container recreate, and the snapshot taken immediately before an
+      # upgrade IS that upgrade's rollback — losing it while recreating the
+      # container would be the worst possible moment.
+      - snapshots:/var/zuloone/snapshots
 
     # No healthcheck stanza: the image carries its own, and restating it here is
     # one more place for the two to disagree.
@@ -74,3 +79,6 @@ services:
       options:
         max-size: "10m"
         max-file: "3"
+
+volumes:
+  snapshots:

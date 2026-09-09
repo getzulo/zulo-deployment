@@ -514,6 +514,8 @@ On `zo-pg-2` (repository **and** cluster member):
 
 ```ini
 [global]
+archive-async=y
+spool-path=/var/spool/pgbackrest
 repo1-path=/var/lib/pgbackrest
 repo1-retention-full=4
 repo1-retention-diff=6
@@ -537,6 +539,8 @@ On `zo-pg-1` (cluster member only — it knows nothing but itself):
 
 ```ini
 [global]
+archive-async=y
+spool-path=/var/spool/pgbackrest
 repo1-host=10.10.2.210
 repo1-host-user=postgres
 archive-push-queue-max=32GiB
@@ -562,6 +566,22 @@ unreachable, WAL accumulates in `pg_wal` until the partition fills and Postgres 
 hard. Past this bound `archive-push` reports success *without* archiving: the database
 stays up and PITR continuity breaks instead. That is only a safe trade because §4.5
 notices within five minutes — without the monitor it is a silent data-loss window.
+
+**`archive-async`** decouples `archive_command` from the push. Without it Postgres
+waits for every segment to reach every repository, in line, before the command
+returns.
+
+That is survivable with one repository on the LAN. It stops being survivable the
+moment a second, off-site repository exists: `archive-push` writes to **all**
+configured repositories and fails the whole command if **any** of them fails, so a
+Hetzner outage would make `archive_command` fail, pile WAL up in `pg_wal`, and take
+the primary down with it. The bound above would step in only by discarding WAL —
+breaking the *local* archive to survive a *remote* fault.
+
+With `archive-async=y` the command returns as soon as the segment is queued in
+`spool-path`, and a background process pushes it with retries. The queue is local
+disk, owned by `postgres`, and must not be shared between hosts. Turn this on and
+verify it **before** adding the off-site repository, not alongside it.
 
 Roles are **not** encoded anywhere above. pgBackRest asks the cluster who is leading at
 run time, so a failover needs no edit here.
