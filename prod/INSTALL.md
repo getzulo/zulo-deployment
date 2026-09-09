@@ -334,6 +334,46 @@ name: zo-pg-1                         # this node
 restapi:
   listen: 10.10.1.210:8008
   connect_address: 10.10.1.210:8008
+  # Two independent controls over the UNSAFE endpoints (PUT/POST/PATCH/DELETE).
+  # GET is deliberately left open: /cluster and the health probe must work with no
+  # credential, and reading cluster state leaks nothing.
+  #
+  # This is not theoretical. Without it the API has NO authentication at all, and
+  # POST /switchover -- along with POST /reinitialize, which WIPES a node's data
+  # directory and re-clones it -- was reachable from zo-ci-1, the host that runs
+  # whatever is in the repository as a CI job. Measured before the fix:
+  #
+  #   zo-ci-1 -> POST /reload  ->  400   (accepted for consideration)
+  #   after   -> POST /reload  ->  403   Access is denied
+  #
+  # allowlist is the network control: it removes the CI runner and zo-app-1
+  # entirely, and needs no secret distributed to anyone. authentication is the
+  # credential control, because on a flat L2 a source address can be spoofed.
+  # Neither alone is enough.
+  allowlist:
+    - 10.10.0.200        # zo-cp-1, the control plane -- the only legitimate caller
+    - 10.10.1.210        # zo-pg-1  \ members, for the calls they make to
+    - 10.10.2.210        # zo-pg-2  / each other
+    - 127.0.0.1          # patronictl run on the node itself
+  authentication:
+    username: patroni
+    # Generate ON the node, identical on both, and never paste it anywhere:
+    #   head -c 24 /dev/urandom | base64 | tr -d '/+=' | head -c 32 \
+    #     > /root/patroni-restapi.pw
+    # The control plane reads the same value from Patroni__Password in cp.env.
+    password: <from /root/patroni-restapi.pw>
+
+# allowlist_include_members is deliberately NOT used. The documentation warns that
+# a member's outgoing address may differ from the api_url it registered in DCS, so
+# it can fail open-endedly -- and it would fail at failover time, which is the one
+# moment nobody is watching. The member addresses are listed explicitly instead.
+#
+# Applying this is a RELOAD, not a restart:
+#   patronictl -c /etc/patroni/config.yml reload zuloone <node> --force
+# Postgres does not restart and no failover occurs -- verified by comparing
+# pg_postmaster_start_time() before and after. Do the REPLICA first, confirm
+# GET /cluster still answers and POST without a credential returns 401, and only
+# then the leader.
 
 etcd3:
   hosts: 10.10.1.210:2379,10.10.2.210:2379,10.10.0.220:2379
