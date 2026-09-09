@@ -1,5 +1,7 @@
 #!/usr/bin/env bash
-# Lock tenant containers to the database and nothing else. Runs on zo-app-1.
+# Lock tenant containers to the database and nothing else — including the host
+# they run on, which needs a separate chain (see ZULOONE-HOST-IN below).
+# Runs on zo-app-1.
 # Idempotent: rebuilds the chain from scratch every time.
 #
 #   ./container-egress.sh                 # apply now
@@ -70,6 +72,26 @@ apply() {
   # Docker's own trailing RETURN, restored because we flushed the chain.
   iptables -A DOCKER-USER -j RETURN
 
+  # --- the host itself ------------------------------------------------------
+  # DOCKER-USER is reached only from FORWARD, and a packet addressed to this
+  # machine's own address goes to INPUT instead — so everything above is blind to
+  # it. Without this block a tenant reaches every service on zo-app-1: sshd today,
+  # and the docker-socket-proxy on 2375 the moment the control plane lands, which
+  # is root on the host from inside a container.
+  #
+  # The tenant needs NOTHING from its host, so this is a flat deny. Established
+  # traffic is returned first, or replies to connections the host opened toward a
+  # container would be dropped.
+  #
+  # Own chain rather than rules spliced into INPUT: idempotent, safe to flush, and
+  # visible as a unit in `iptables -L`.
+  iptables -N ZULOONE-HOST-IN 2>/dev/null || true
+  iptables -F ZULOONE-HOST-IN
+  iptables -C INPUT -i "$BRIDGE" -j ZULOONE-HOST-IN 2>/dev/null \
+    || iptables -I INPUT 1 -i "$BRIDGE" -j ZULOONE-HOST-IN
+  iptables -A ZULOONE-HOST-IN -m conntrack --ctstate RELATED,ESTABLISHED -j RETURN
+  iptables -A ZULOONE-HOST-IN -j DROP
+
   # IPv6: Docker leaves it disabled by default, so the chain usually does not
   # exist. If it does, deny outright — nothing here needs it, and a half-open
   # v6 path would quietly bypass every rule above.
@@ -85,6 +107,9 @@ apply() {
 status() {
   echo "DOCKER-USER (bridge ${BRIDGE}, subnet ${SUBNET}):"
   iptables -L DOCKER-USER -n -v --line-numbers
+  echo
+  echo "ZULOONE-HOST-IN — container traffic addressed to this host:"
+  iptables -L ZULOONE-HOST-IN -n -v --line-numbers 2>/dev/null || echo "  MISSING — the host is exposed to every container"
   echo
 
   # Count what landed against what was asked for. Every way this list gets
