@@ -5,6 +5,14 @@
 #   ./check-cluster.sh            # human-readable, non-zero exit on trouble
 #   ./check-cluster.sh --install  # + systemd timer, every 5 minutes
 #
+# Set CP_URL to also publish every run to the control plane, which is what makes
+# the node visible on the Infrastructure screen:
+#
+#   CP_URL=https://10.10.0.200:8443 ./check-cluster.sh --install
+#
+# The token is read from CP_TOKEN_FILE (default /etc/zuloone/node-token) and must
+# match Patroni__ReportToken on the control plane.
+#
 # Exits 0 healthy, 1 degraded, 2 broken. Anything non-zero also writes to the
 # journal, so `journalctl -u zuloone-cluster-check` is the history.
 #
@@ -29,6 +37,11 @@ LAG_CRIT_BYTES="${LAG_CRIT_BYTES:-134217728}"     # 128 MB
 BACKUP_WARN_HOURS="${BACKUP_WARN_HOURS:-30}"      # daily + slack
 STANZA="${STANZA:-zuloone}"
 ALERT_CMD="${ALERT_CMD:-}"
+
+# Where to publish every run, so the panel can show this node. Empty disables it
+# and the script behaves exactly as it did before.
+CP_URL="${CP_URL:-}"
+CP_TOKEN_FILE="${CP_TOKEN_FILE:-/etc/zuloone/node-token}"
 
 UNIT=/etc/systemd/system/zuloone-cluster-check
 worst=0
@@ -208,6 +221,66 @@ case "$worst" in
   2) say "RESULT: BROKEN" ;;
 esac
 
+# --- publish to the control plane -------------------------------------------
+# ALWAYS, not only on trouble. The panel needs to tell three states apart:
+#
+#   healthy            -- a fresh report saying so
+#   the check is dead  -- no report for a while
+#   the node is gone   -- likewise
+#
+# If a healthy run stayed silent, the last two would be indistinguishable from
+# the first, and the panel would keep displaying a stale "healthy" long after the
+# machine stopped saying anything. Publishing every five minutes inverts that:
+# silence becomes the alarm, and it cannot be missed by losing one message.
+#
+# Note this is the opposite policy from ALERT_CMD below, which is for paging a
+# human and correctly stays quiet when there is nothing to say.
+publish_report() {
+  [ -n "$CP_URL" ] || return 0
+  if [ ! -r "$CP_TOKEN_FILE" ]; then
+    echo "  [ note ] CP_URL is set but $CP_TOKEN_FILE is unreadable — not publishing" >&2
+    return 0
+  fi
+
+  local status
+  case "$worst" in 0) status=healthy ;; 1) status=degraded ;; *) status=broken ;; esac
+
+  # JSON assembled by python3 rather than by hand: the report contains newlines,
+  # quotes and the odd backslash from a path, and hand-rolled escaping here would
+  # fail on exactly the reports that matter most. python3 is already a hard
+  # dependency on these hosts — Patroni is written in it.
+  #
+  # -k is deliberate. The control plane presents a Cloudflare Origin CA
+  # certificate, which chains to a root no system trust store carries, and this
+  # request never leaves the 10.x network. Forging it would require already being
+  # positioned to redirect internal traffic, at which point a faked health report
+  # is far from the worst available move.
+  if ! NODE="$(hostname)" STATUS="$status" python3 -c '
+import datetime, json, os, sys
+sys.stdout.write(json.dumps({
+    "node": os.environ["NODE"],
+    "status": os.environ["STATUS"],
+    "report": sys.stdin.read(),
+    "checkedAt": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+}))' <<<"$report" \
+      | curl -sk --fail-with-body --max-time 10 -o /dev/null \
+             -X POST "${CP_URL%/}/api/infra/report" \
+             -H "X-Node-Token: $(cat "$CP_TOKEN_FILE")" \
+             -H 'Content-Type: application/json' \
+             --data-binary @-
+  then
+    # --fail-with-body above is load-bearing. Without it curl exits 0 for ANY
+    # response it managed to receive, so a 404 from a control plane that does not
+    # have this endpoint, or a 401 from a stale token, both looked like a
+    # successful publish — the exact failure this reporting exists to prevent.
+    #
+    # Never fatal, though. The panel going missing must not make a healthy cluster
+    # report itself broken: this script's exit code is about the DATABASE.
+    echo "  [ note ] could not publish to $CP_URL" >&2
+  fi
+}
+publish_report
+
 if [ "$worst" -ne 0 ]; then
   printf '%s' "$report" | logger -t zuloone-cluster-check
   [ -n "$ALERT_CMD" ] && printf '%s' "$report" | $ALERT_CMD
@@ -220,6 +293,11 @@ Description=ZuloOne Patroni cluster and backup check
 
 [Service]
 Type=oneshot
+# QUOTED. systemd splits Environment= on whitespace, so an unquoted value
+# containing a space silently becomes a different, shorter setting — the failure
+# mode that once turned a two-node PG_NODES list into one node.
+Environment="CP_URL=${CP_URL}"
+Environment="CP_TOKEN_FILE=${CP_TOKEN_FILE}"
 ExecStart=$(readlink -f "$0")
 EOF
   cat > "${UNIT}.timer" <<'EOF'
