@@ -1156,6 +1156,7 @@ than seconds, and the reason the off-site copy exists.
 - **Tenant-to-tenant isolation.** With one tenant it does not bite. Before the second,
   see [ARCHITECTURE.md §5](ARCHITECTURE.md).
 - **Outbound e-mail.** Tenant containers cannot reach the internet until
-  `SMTP_DESTS` is set on `container-egress.sh` (Gmail: `smtp.gmail.com:587` and
-  `:465`). Host `smtp.google.com` is wrong. Port 25 is widely blocked anyway;
-  use a relay or 587/465.
+  `SMTP_DESTS` is set on `container-egress.sh`. Prefer bare ports `587 465`
+  (Gmail A records rotate; a pinned IP times out after the next reboot or
+  DNS change). Host `smtp.google.com` is wrong. Port 25 is widely blocked;
+  use a relay or 587/465. Then `--install`, or a reboot wipes the hole.

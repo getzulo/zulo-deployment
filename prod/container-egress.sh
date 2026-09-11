@@ -41,10 +41,11 @@ SUBNET="${SUBNET:-172.30.0.0/24}"
 PG_NODES="${PG_NODES:-10.10.1.210 10.10.2.210}"
 PG_PORT="${PG_PORT:-5432}"
 
-# Extra TCP destinations, space-separated host:port. Resolved to A records at
-# apply time — Google rotates smtp.gmail.com, so a yesterday-working hole can
-# time out today; re-run this script after that. Empty = no extra hole.
-# Example: SMTP_DESTS="smtp.gmail.com:587 smtp.gmail.com:465"
+# Extra TCP destinations, space-separated. Empty = no extra hole.
+#   587 465                  any destination on that port (survives Gmail A-record rotation)
+#   smtp.gmail.com:587       pin to today's A records of that host
+# Mixing both is fine. Bare ports are the right choice for Gmail.
+# Example: SMTP_DESTS="587 465"
 SMTP_DESTS="${SMTP_DESTS:-}"
 
 UNIT=/etc/systemd/system/zuloone-container-egress.service
@@ -75,10 +76,15 @@ apply() {
   # Hostnames are resolved now; the rule matches the IP, not the name.
   if [ -n "$SMTP_DESTS" ]; then
     for spec in $SMTP_DESTS; do
+      # Bare port: any destination. host:port: pin to current A records.
+      if [ "$spec" -eq "$spec" ] 2>/dev/null; then
+        iptables -A DOCKER-USER -i "$BRIDGE" -p tcp --dport "$spec" -j RETURN
+        continue
+      fi
       host="${spec%%:*}"
       port="${spec##*:}"
       if [ -z "$host" ] || [ "$host" = "$spec" ] || [ -z "$port" ]; then
-        echo "SMTP_DESTS entry '$spec' is not host:port — skipped" >&2
+        echo "SMTP_DESTS entry '$spec' is not a port or host:port — skipped" >&2
         continue
       fi
       ips=$(getent ahostsv4 "$host" | awk '{print $1}' | sort -u)
