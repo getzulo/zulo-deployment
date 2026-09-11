@@ -35,6 +35,15 @@
 #
 # The residual risk is prune. Closing it needs a filter finer than one flag per
 # group; until then, whatever can reach 2375 can remove stopped containers.
+#
+# NOT MEASURED, and deliberately kept out of the list above: the control plane's
+# image sweep (PruneJobHandler.SweepImagesAsync) needs DELETE /images/{id} to
+# pass. It is EXPECTED to, because the DELETE verb already reaches the daemon —
+# tenant deletion calls RemoveContainerAsync, i.e. DELETE /containers/{id}, and
+# that is a working feature — and IMAGES is 1. Nobody has confirmed it against
+# this proxy. If it turns out to be refused, the sweep says so in its own words:
+# TenantContainerService.RemoveImageAsync logs a 403 at Error naming this
+# whitelist, separately from the 409 it gets for an image still in use.
 name: zuloone-prod
 
 services:
