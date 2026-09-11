@@ -1155,5 +1155,7 @@ than seconds, and the reason the off-site copy exists.
   urgent.
 - **Tenant-to-tenant isolation.** With one tenant it does not bite. Before the second,
   see [ARCHITECTURE.md §5](ARCHITECTURE.md).
-- **Outbound e-mail.** Hetzner blocks port 25 and its ranges are widely blocklisted;
-  tenant invitations will need a relay, not direct SMTP.
+- **Outbound e-mail.** Tenant containers cannot reach the internet until
+  `SMTP_DESTS` is set on `container-egress.sh` (Gmail: `smtp.gmail.com:587` and
+  `:465`). Host `smtp.google.com` is wrong. Port 25 is widely blocked anyway;
+  use a relay or 587/465.

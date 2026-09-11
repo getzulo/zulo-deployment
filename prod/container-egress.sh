@@ -41,6 +41,12 @@ SUBNET="${SUBNET:-172.30.0.0/24}"
 PG_NODES="${PG_NODES:-10.10.1.210 10.10.2.210}"
 PG_PORT="${PG_PORT:-5432}"
 
+# Extra TCP destinations, space-separated host:port. Resolved to A records at
+# apply time — Google rotates smtp.gmail.com, so a yesterday-working hole can
+# time out today; re-run this script after that. Empty = no extra hole.
+# Example: SMTP_DESTS="smtp.gmail.com:587 smtp.gmail.com:465"
+SMTP_DESTS="${SMTP_DESTS:-}"
+
 UNIT=/etc/systemd/system/zuloone-container-egress.service
 
 log() { printf '\n\033[1;34m==>\033[0m %s\n' "$*"; }
@@ -64,6 +70,27 @@ apply() {
   for node in $PG_NODES; do
     iptables -A DOCKER-USER -i "$BRIDGE" -d "$node" -p tcp --dport "$PG_PORT" -j RETURN
   done
+
+  # Optional: SMTP / Seq / similar. Must sit ABOVE the catch-all DROP.
+  # Hostnames are resolved now; the rule matches the IP, not the name.
+  if [ -n "$SMTP_DESTS" ]; then
+    for spec in $SMTP_DESTS; do
+      host="${spec%%:*}"
+      port="${spec##*:}"
+      if [ -z "$host" ] || [ "$host" = "$spec" ] || [ -z "$port" ]; then
+        echo "SMTP_DESTS entry '$spec' is not host:port — skipped" >&2
+        continue
+      fi
+      ips=$(getent ahostsv4 "$host" | awk '{print $1}' | sort -u)
+      if [ -z "$ips" ]; then
+        echo "SMTP_DESTS: $host did not resolve — skipped" >&2
+        continue
+      fi
+      for ip in $ips; do
+        iptables -A DOCKER-USER -i "$BRIDGE" -d "$ip" -p tcp --dport "$port" -j RETURN
+      done
+    done
+  fi
 
   # Everything else leaving the bridge: the rest of the LAN, the unrelated
   # machines on it, link-local metadata endpoints, and the internet.
@@ -127,6 +154,10 @@ status() {
     echo "database nodes allowed: ${have}/${want} — ${PG_NODES}"
     echo
   fi
+  if [ -n "$SMTP_DESTS" ]; then
+    echo "extra TCP destinations: ${SMTP_DESTS}"
+    echo
+  fi
 
   if ip link show "$BRIDGE" >/dev/null 2>&1; then
     echo "bridge ${BRIDGE}: present"
@@ -159,6 +190,7 @@ Environment=SUBNET=${SUBNET}
 # The result passes every test until Patroni fails over to the other node, at which
 # point every tenant loses its database and this file still looks correct.
 Environment="PG_NODES=${PG_NODES}"
+Environment="SMTP_DESTS=${SMTP_DESTS}"
 
 [Install]
 WantedBy=multi-user.target

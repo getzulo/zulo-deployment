@@ -253,6 +253,9 @@ Postgres and in-memory only. There is no telemetry, no update check, and JWT use
 inline symmetric key, so there is no OIDC metadata fetch either.
 
 Open a destination when a feature is switched on, and only that destination.
+Outbound SMTP is one such hole: set `SMTP_DESTS="smtp.gmail.com:587 smtp.gmail.com:465"`
+and re-run `container-egress.sh --install`. Names are resolved at apply time; if
+Gmail rotates A records the Test button times out again until the script is re-run.
 
 ### Verified
 
