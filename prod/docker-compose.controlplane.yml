@@ -9,6 +9,10 @@
 #   cd /opt/zuloone
 #   CP_VERSION=2026.9.8 docker compose up -d
 #
+# For now a green control-plane CI on master/tag also does this: writes
+# CP_VERSION into .env here and recreates `controlplane`. Manual pin still
+# wins if you set the var yourself before `up`.
+#
 # The registry is plain HTTP on the LAN, so /etc/docker/daemon.json on this host
 # lists it under insecure-registries. Nothing here is published to the internet:
 # 8443 is bound to the LAN address the router forwards to, and 5099 to loopback
