@@ -229,7 +229,16 @@ add chain=dstnat action=dst-nat protocol=tcp dst-port=8444 \
 # Guard, as for the tenants. Worth MORE here than there: with no src-nat on this
 # path the true source is still visible at the forward chain, so this rule does
 # what it says rather than matching an address of our own.
+#
+# Fleet heartbeats must sit ABOVE this drop. Postgres / app / mongo publish
+# every five minutes to https://10.10.0.200:8443; without the accept the panel
+# shows "last reported 44h ago" while the cluster itself is fine. Core-subnet
+# hosts (zo-ci-1, zo-pgw-1, the panel) never cross this router.
 /ip firewall filter
+add chain=forward action=accept protocol=tcp \
+    src-address=10.10.1.210,10.10.2.210,10.10.1.220 \
+    dst-address=10.10.0.200 dst-port=8443 \
+    comment="ZuloOne: fleet node reports to control plane"
 add chain=forward action=drop protocol=tcp \
     dst-address=10.10.0.200 dst-port=8443 \
     src-address-list=!cloudflare \

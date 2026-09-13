@@ -679,6 +679,21 @@ apart from its exit code, which is what an external monitor should key on anyway
 The Infrastructure screen also expects **etcd / mongo / app / CI**. Same token, different
 script. The panel publishes itself; do not install `role=panel`.
 
+Postgres and the app host sit in other subnets. Their `POST /api/infra/report` to
+`https://10.10.0.200:8443` crosses the core router, and the Cloudflare-only guard on
+that port will drop it unless this accept sits **above** the guard (see `mikrotik.rsc`):
+
+```
+/ip firewall filter
+add chain=forward action=accept protocol=tcp \
+    src-address=10.10.1.210,10.10.2.210,10.10.1.220 \
+    dst-address=10.10.0.200 dst-port=8443 \
+    place-before=[find comment="ZuloOne guard: control plane reachable only via Cloudflare"] \
+    comment="ZuloOne: fleet node reports to control plane"
+```
+
+Without that rule the cluster can be healthy while Overview shows "last reported 44h ago".
+
 ```bash
 # zo-pgw-1
 ROLE=etcd CP_URL=https://10.10.0.200:8443 sudo ./check-node.sh --install

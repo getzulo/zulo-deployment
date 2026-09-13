@@ -21,7 +21,9 @@ REGISTRY_URL="${REGISTRY_URL:-http://127.0.0.1:5000/v2/}"
 DISK_PATH="${DISK_PATH:-/}"
 ALERT_CMD="${ALERT_CMD:-}"
 
-UNIT=/etc/systemd/system/zuloone-node-check
+# One unit per role: app and mongo share zo-app-1, and a single name would
+# make the second --install silently replace the first.
+UNIT=/etc/systemd/system/zuloone-node-check-${ROLE}
 worst=0
 report=""
 
@@ -169,9 +171,9 @@ OnUnitActiveSec=5min
 WantedBy=timers.target
 EOF
   systemctl daemon-reload
-  systemctl enable --now zuloone-node-check.timer
+  systemctl enable --now "zuloone-node-check-${ROLE}.timer"
   echo
-  echo "Installed ${ROLE} as ${NODE}. History:  journalctl -u zuloone-node-check"
+  echo "Installed ${ROLE} as ${NODE}. History:  journalctl -u zuloone-node-check-${ROLE}"
 }
 
 [ "${1:-}" = "--install" ] && install_timer
