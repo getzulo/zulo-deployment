@@ -95,7 +95,10 @@ apply() {
     for spec in $SMTP_DESTS; do
       # Bare port: any destination. host:port: pin to current A records.
       if [ "$spec" -eq "$spec" ] 2>/dev/null; then
+        # Same dual-bridge reason as PG/Mongo: a tenant on edge+data often
+        # defaults via zo-data0, and an allow only on zo-edge0 times out.
         iptables -A DOCKER-USER -i "$BRIDGE" -p tcp --dport "$spec" -j RETURN
+        iptables -A DOCKER-USER -i "$DATA_BRIDGE" -p tcp --dport "$spec" -j RETURN
         continue
       fi
       host="${spec%%:*}"
@@ -111,6 +114,7 @@ apply() {
       fi
       for ip in $ips; do
         iptables -A DOCKER-USER -i "$BRIDGE" -d "$ip" -p tcp --dport "$port" -j RETURN
+        iptables -A DOCKER-USER -i "$DATA_BRIDGE" -d "$ip" -p tcp --dport "$port" -j RETURN
       done
     done
   fi
