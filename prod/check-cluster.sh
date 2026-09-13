@@ -10,6 +10,8 @@
 #
 #   CP_URL=https://10.10.0.200:8443 ./check-cluster.sh --install
 #
+# This script is the Postgres role. etcd / mongo / app / ci use check-node.sh.
+#
 # The token is read from CP_TOKEN_FILE (default /etc/zuloone/node-token) and must
 # match Patroni__ReportToken on the control plane.
 #
@@ -42,6 +44,8 @@ ALERT_CMD="${ALERT_CMD:-}"
 # and the script behaves exactly as it did before.
 CP_URL="${CP_URL:-}"
 CP_TOKEN_FILE="${CP_TOKEN_FILE:-/etc/zuloone/node-token}"
+ROLE="${ROLE:-postgres}"
+NODE="${NODE:-$(hostname)}"
 
 UNIT=/etc/systemd/system/zuloone-cluster-check
 worst=0
@@ -268,7 +272,7 @@ publish_report() {
   # request never leaves the 10.x network. Forging it would require already being
   # positioned to redirect internal traffic, at which point a faked health report
   # is far from the worst available move.
-  if ! NODE="$(hostname)" STATUS="$status" BACKUPS="$backups" python3 -c '
+  if ! NODE="$NODE" STATUS="$status" ROLE="$ROLE" BACKUPS="$backups" python3 -c '
 import datetime, json, os, sys
 try:
     backups = json.loads(os.environ.get("BACKUPS") or "[]")
@@ -276,6 +280,7 @@ except ValueError:
     backups = []
 sys.stdout.write(json.dumps({
     "node": os.environ["NODE"],
+    "role": os.environ.get("ROLE") or "postgres",
     "status": os.environ["STATUS"],
     "report": sys.stdin.read(),
     "backups": backups,

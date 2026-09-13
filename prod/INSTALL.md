@@ -676,6 +676,24 @@ newer than `last_archived_time`.
 Set `ALERT_CMD` in the unit to pipe the report somewhere. Without it the script is silent
 apart from its exit code, which is what an external monitor should key on anyway.
 
+The Infrastructure screen also expects **etcd / mongo / app / CI**. Same token, different
+script. The panel publishes itself; do not install `role=panel`.
+
+```bash
+# zo-pgw-1
+ROLE=etcd CP_URL=https://10.10.0.200:8443 sudo ./check-node.sh --install
+
+# zo-app-1 — two names, one host (Mongo is a compose service here)
+ROLE=app CP_URL=https://10.10.0.200:8443 sudo ./check-node.sh --install
+ROLE=mongo NODE=mongo CP_URL=https://10.10.0.200:8443 sudo ./check-node.sh --install
+
+# zo-ci-1
+ROLE=ci CP_URL=https://10.10.0.200:8443 sudo ./check-node.sh --install
+```
+
+The list of names the panel waits for is **Settings → Machines that should report**
+(`Infra:ExpectedNodes`). A name that never reports is shown as `never`, not hidden.
+
 ### 4.6 Prove a restore — a backup you have not restored is a hypothesis
 
 Restore into a scratch directory on the repository host. **Point `pg1-path` at the
