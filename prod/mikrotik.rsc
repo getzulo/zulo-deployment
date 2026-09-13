@@ -363,6 +363,12 @@ add chain=forward action=accept protocol=tcp \
 add chain=forward action=accept protocol=tcp \
     src-address=10.10.0.200 dst-address=10.10.1.220 dst-port=443 \
     comment="ZuloOne cp: tenant health + setup"
+# Farm journal — one mongod on zo-app-1. The control plane provisions
+# logs_<slug> and reads the fleet viewer over this path. Tenant containers
+# reach the same daemon on the host bridge / hairpin, not through this rule.
+add chain=forward action=accept protocol=tcp \
+    src-address=10.10.0.200 dst-address=10.10.1.220 dst-port=27017 \
+    comment="ZuloOne cp: farm mongo"
 
 # Everything else between tiers is denied. Note this does NOT block outbound to
 # the internet (that is srcnat/WAN, not inter-subnet), which app needs for image

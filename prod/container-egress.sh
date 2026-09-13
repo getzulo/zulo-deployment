@@ -73,9 +73,12 @@ apply() {
   iptables -A DOCKER-USER -i "$BRIDGE" -o "$BRIDGE" -j RETURN
   iptables -A DOCKER-USER -i "$DATA_BRIDGE" -o "$DATA_BRIDGE" -j RETURN
 
-  # Permitted database destinations.
+  # Permitted database destinations. Rules on both bridges: a tenant attached
+  # to edge+data may pick zo-data0 as its default route, and a PG allow only
+  # on zo-edge0 then looks like a Postgres outage.
   for node in $PG_NODES; do
     iptables -A DOCKER-USER -i "$BRIDGE" -d "$node" -p tcp --dport "$PG_PORT" -j RETURN
+    iptables -A DOCKER-USER -i "$DATA_BRIDGE" -d "$node" -p tcp --dport "$PG_PORT" -j RETURN
   done
 
   # Farm journal Mongo — pinned on zo-data0 (see docker-compose.yml). Rules on
