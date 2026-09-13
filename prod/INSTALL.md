@@ -794,10 +794,34 @@ ufw's, so `ufw deny` leaves container traffic flowing while reporting the port b
 
 > **Checkpoint 5** — `docker info` works on both as `deploy`;
 > `curl http://10.10.0.210:5000/v2/` from `zo-app-1` returns `{}`;
-> `./container-egress.sh --status` reports `database nodes allowed: 2/2` and lists a
+> `./container-egress.sh --status` reports Postgres and Mongo node counts and lists a
 > populated `ZULOONE-HOST-IN` chain. Both matter: a `MISMATCH` line means only one
 > database node is permitted and tenants will lose the database at the next failover,
 > and a missing host chain means containers can still reach every service on this VM.
+
+### 5.4 Farm journal (Mongo)
+
+The tenant **Logs** page and the control-plane fleet journal read from Mongo, not
+Postgres. `docker compose` on `zo-app-1` starts one `mongo` service (pinned on the
+`data` bridge — see `docker-compose.yml`). Without the matching allowlist in
+`container-egress.sh` (`MONGO_NODES`, default `172.30.1.2`) tenant containers cannot
+reach it: Serilog buffers and drops silently, and both viewers stay empty even though
+Core is healthy.
+
+On **`zo-cp-1`**, set the operator connection in `cp.env`:
+
+```
+TenantLogs__Url=mongodb://zuloone:<MONGO_ROOT_PASSWORD>@10.10.1.220:27017/admin
+```
+
+Use the same root credentials as `MONGO_ROOT_*` in the app host `.env`. The control
+plane provisions per-tenant `logs_<slug>` databases and injects scoped URLs into tenant
+containers; purge/TTL never call `dropDatabase`. Seq remains optional — do not set
+`Logging__Seq__Url` unless you also open that destination in egress.
+
+Ensure the MikroTik matrix allows **core → app on tcp 27017** so `zo-cp-1` can
+provision and read journals. Re-run `./container-egress.sh --install` after changing
+`MONGO_*` variables.
 
 ---
 

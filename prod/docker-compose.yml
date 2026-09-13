@@ -140,9 +140,40 @@ services:
       - dp-keys-t1:/var/zuloone/dp-keys
     networks:
       - edge
+      # Same private bridge as mongo — hostname `mongo`, not the LAN address.
+      - data
+
+  # ----------------------------------------------------------- farm journal ---
+  # One mongod for the whole installation; the control plane creates a database
+  # and read/write user per tenant (`logs_<slug>`). Tenants reach it over the
+  # `data` bridge; zo-cp-1 reaches the published port on this host (see INSTALL).
+  mongo:
+    image: mongo:7
+    restart: unless-stopped
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: ${MONGO_ROOT_USER:-zuloone}
+      MONGO_INITDB_ROOT_PASSWORD: ${MONGO_ROOT_PASSWORD:?set MONGO_ROOT_PASSWORD in .env}
+    volumes:
+      - mongo-data:/data/db
+    healthcheck:
+      test: ["CMD", "mongosh", "--quiet", "--eval", "db.adminCommand('ping').ok"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+    ports:
+      # Control plane on zo-cp-1 is off-box — it uses the LAN address, not the
+      # docker hostname. Tenant containers use `mongo` on the data network.
+      - "27017:27017"
+    networks:
+      edge:
+      data:
+        # PINNED — next free address after edge (.0/24) and LAN pg/app (.210/.220).
+        # Must match MONGO_NODES in container-egress.sh.
+        ipv4_address: 172.30.1.2
 
 volumes:
   dp-keys-t1:
+  mongo-data:
 
 networks:
   edge:
@@ -156,3 +187,11 @@ networks:
     ipam:
       config:
         - subnet: 172.30.0.0/24
+  data:
+    # Private bridge for tenant ↔ mongo, same role phase-0 gives Postgres. Not
+    # attached to Traefik. PINNED for the same reason as edge above.
+    driver_opts:
+      com.docker.network.bridge.name: zo-data0
+    ipam:
+      config:
+        - subnet: 172.30.1.0/24
