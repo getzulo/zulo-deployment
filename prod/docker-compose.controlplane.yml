@@ -30,7 +30,9 @@ services:
 
     # Every secret the panel holds: the registry connection, the tenant-database
     # admin password, the Cloudflare Access audience, the break-glass operator
-    # hash, the Patroni credentials. Root-owned 0600 on the host, never in git.
+    # hash, the Patroni credentials. Root:deploy 0640 on the host, never in git.
+    # 0600 blocked the CI hop: deploy can docker but cannot sudo, and Compose
+    # reads env_file as the invoking user before talking to the daemon.
     env_file:
       - ./cp.env
 
