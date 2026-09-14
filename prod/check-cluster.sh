@@ -272,7 +272,67 @@ publish_report() {
   # request never leaves the 10.x network. Forging it would require already being
   # positioned to redirect internal traffic, at which point a faked health report
   # is far from the worst available move.
+  #
+  # X-Node-Commands tells the panel this copy will honour a backup request in the
+  # reply. Without it the panel keeps the request — older scripts discarded the
+  # body, and handing them the command would consume it into nothing.
+  local reply
+  reply="$(mktemp)"
   if ! NODE="$NODE" STATUS="$status" ROLE="$ROLE" BACKUPS="$backups" python3 -c '
+import datetime, json, os, sys
+try:
+    backups = json.loads(os.environ.get("BACKUPS") or "[]")
+except ValueError:
+    backups = []
+sys.stdout.write(json.dumps({
+    "node": os.environ["NODE"],
+    "role": os.environ.get("ROLE") or "postgres",
+    "status": os.environ["STATUS"],
+    "report": sys.stdin.read(),
+    "backups": backups,
+    "checkedAt": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+}))' <<<"$report" \
+      | curl -sk --fail-with-body --max-time 10 -o "$reply" \
+             -X POST "${CP_URL%/}/api/infra/report" \
+             -H "X-Node-Token: $(cat "$CP_TOKEN_FILE")" \
+             -H "X-Node-Commands: 1" \
+             -H 'Content-Type: application/json' \
+             --data-binary @-
+  then
+    # --fail-with-body above is load-bearing. Without it curl exits 0 for ANY
+    # response it managed to receive, so a 404 from a control plane that does not
+    # have this endpoint, or a 401 from a stale token, both looked like a
+    # successful publish — the exact failure this reporting exists to prevent.
+    #
+    # Never fatal, though. The panel going missing must not make a healthy cluster
+    # report itself broken: this script's exit code is about the DATABASE.
+    echo "  [ note ] could not publish to $CP_URL" >&2
+    rm -f "$reply"
+    return 0
+  fi
+
+  local backup_type
+  backup_type="$(python3 -c '
+import json, sys
+try:
+    d = json.load(open(sys.argv[1], encoding="utf-8"))
+    b = d.get("backup") or {}
+    t = b.get("type") or ""
+    print(t if t in ("full", "diff", "incr") else "")
+except Exception:
+    print("")
+' "$reply")"
+  rm -f "$reply"
+
+  if [ -z "$backup_type" ]; then
+    return 0
+  fi
+
+  echo "  [ note ] control plane asked for a $backup_type backup" >&2
+  if sudo -u postgres pgbackrest --stanza="$STANZA" --type="$backup_type" --log-level-console=info backup; then
+    echo "  [ note ] $backup_type backup finished — republishing inventory" >&2
+    backups="$(sudo -u postgres pgbackrest --stanza="$STANZA" --output=json info 2>/dev/null || echo '[]')"
+    NODE="$NODE" STATUS="$status" ROLE="$ROLE" BACKUPS="$backups" python3 -c '
 import datetime, json, os, sys
 try:
     backups = json.loads(os.environ.get("BACKUPS") or "[]")
@@ -289,17 +349,12 @@ sys.stdout.write(json.dumps({
       | curl -sk --fail-with-body --max-time 10 -o /dev/null \
              -X POST "${CP_URL%/}/api/infra/report" \
              -H "X-Node-Token: $(cat "$CP_TOKEN_FILE")" \
+             -H "X-Node-Commands: 1" \
              -H 'Content-Type: application/json' \
-             --data-binary @-
-  then
-    # --fail-with-body above is load-bearing. Without it curl exits 0 for ANY
-    # response it managed to receive, so a 404 from a control plane that does not
-    # have this endpoint, or a 401 from a stale token, both looked like a
-    # successful publish — the exact failure this reporting exists to prevent.
-    #
-    # Never fatal, though. The panel going missing must not make a healthy cluster
-    # report itself broken: this script's exit code is about the DATABASE.
-    echo "  [ note ] could not publish to $CP_URL" >&2
+             --data-binary @- \
+      || echo "  [ note ] could not republish inventory to $CP_URL" >&2
+  else
+    echo "  [ note ] requested $backup_type backup FAILED" >&2
   fi
 }
 publish_report

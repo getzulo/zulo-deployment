@@ -666,6 +666,11 @@ It checks what looks fine until you need it: etcd quorum lost (Patroni then refu
 promote anyone), a standby that stopped following, an archiver whose last attempt failed,
 WAL piling up unarchived, a backup that aged out, the data partition filling.
 
+The Backups page can also ask this host for an ad-hoc backup. The same script picks the
+request up on its next run (up to five minutes) and starts `pgbackrest`. Deploy the
+current `check-cluster.sh` — older copies discard the panel's reply, so a **Backup now**
+click sits until it expires.
+
 It reports the archiver from `pg_stat_archiver` **directly**, because `pgbackrest check`
 is not always meaningful. On a node whose config lists only itself, running as a standby,
 there is no primary to test — check exits 0 having verified nothing. The script says which
