@@ -239,6 +239,28 @@ esac
 #
 # Note this is the opposite policy from ALERT_CMD below, which is for paging a
 # human and correctly stays quiet when there is nothing to say.
+
+# Direct POST, then SSH hop to zo-cp-1. :8443 from another subnet is dropped by
+# the core router's Cloudflare-only guard; port 22 is not.
+post_body_to_cp() {
+  local body="$1" dest="$2"
+  if curl -sk --fail-with-body --max-time 10 -o "$dest" \
+           -X POST "${CP_URL%/}/api/infra/report" \
+           -H "X-Node-Token: $(cat "$CP_TOKEN_FILE")" \
+           -H "X-Node-Commands: 1" \
+           -H 'Content-Type: application/json' \
+           --data-binary @"$body"
+  then
+    return 0
+  fi
+  [ -r /etc/zuloone/cp-hop ] || return 1
+  ssh -i /etc/zuloone/cp-hop -o BatchMode=yes -o IdentitiesOnly=yes \
+      -o UserKnownHostsFile=/etc/zuloone/cp-hop.known \
+      -o GlobalKnownHostsFile=/dev/null \
+      -o StrictHostKeyChecking=yes -o ConnectTimeout=5 \
+      zuloone@10.10.0.200 cp-report-hop <"$body" >"$dest"
+}
+
 publish_report() {
   [ -n "$CP_URL" ] || return 0
   if [ ! -r "$CP_TOKEN_FILE" ]; then
@@ -276,9 +298,10 @@ publish_report() {
   # X-Node-Commands tells the panel this copy will honour a backup request in the
   # reply. Without it the panel keeps the request — older scripts discarded the
   # body, and handing them the command would consume it into nothing.
-  local reply
+  local body reply
+  body="$(mktemp)"
   reply="$(mktemp)"
-  if ! NODE="$NODE" STATUS="$status" ROLE="$ROLE" BACKUPS="$backups" python3 -c '
+  NODE="$NODE" STATUS="$status" ROLE="$ROLE" BACKUPS="$backups" python3 -c '
 import datetime, json, os, sys
 try:
     backups = json.loads(os.environ.get("BACKUPS") or "[]")
@@ -291,25 +314,16 @@ sys.stdout.write(json.dumps({
     "report": sys.stdin.read(),
     "backups": backups,
     "checkedAt": datetime.datetime.now(datetime.timezone.utc).isoformat(),
-}))' <<<"$report" \
-      | curl -sk --fail-with-body --max-time 10 -o "$reply" \
-             -X POST "${CP_URL%/}/api/infra/report" \
-             -H "X-Node-Token: $(cat "$CP_TOKEN_FILE")" \
-             -H "X-Node-Commands: 1" \
-             -H 'Content-Type: application/json' \
-             --data-binary @-
-  then
-    # --fail-with-body above is load-bearing. Without it curl exits 0 for ANY
-    # response it managed to receive, so a 404 from a control plane that does not
-    # have this endpoint, or a 401 from a stale token, both looked like a
-    # successful publish — the exact failure this reporting exists to prevent.
-    #
-    # Never fatal, though. The panel going missing must not make a healthy cluster
+}))' <<<"$report" >"$body"
+
+  if ! post_body_to_cp "$body" "$reply"; then
+    rm -f "$body" "$reply"
+    # Never fatal. The panel going missing must not make a healthy cluster
     # report itself broken: this script's exit code is about the DATABASE.
     echo "  [ note ] could not publish to $CP_URL" >&2
-    rm -f "$reply"
     return 0
   fi
+  rm -f "$body"
 
   local backup_type
   backup_type="$(python3 -c '
@@ -332,6 +346,9 @@ except Exception:
   if sudo -u postgres pgbackrest --stanza="$STANZA" --type="$backup_type" --log-level-console=info backup; then
     echo "  [ note ] $backup_type backup finished — republishing inventory" >&2
     backups="$(sudo -u postgres pgbackrest --stanza="$STANZA" --output=json info 2>/dev/null || echo '[]')"
+    local redo dest
+    redo="$(mktemp)"
+    dest="$(mktemp)"
     NODE="$NODE" STATUS="$status" ROLE="$ROLE" BACKUPS="$backups" python3 -c '
 import datetime, json, os, sys
 try:
@@ -345,14 +362,10 @@ sys.stdout.write(json.dumps({
     "report": sys.stdin.read(),
     "backups": backups,
     "checkedAt": datetime.datetime.now(datetime.timezone.utc).isoformat(),
-}))' <<<"$report" \
-      | curl -sk --fail-with-body --max-time 10 -o /dev/null \
-             -X POST "${CP_URL%/}/api/infra/report" \
-             -H "X-Node-Token: $(cat "$CP_TOKEN_FILE")" \
-             -H "X-Node-Commands: 1" \
-             -H 'Content-Type: application/json' \
-             --data-binary @- \
+}))' <<<"$report" >"$redo"
+    post_body_to_cp "$redo" "$dest" \
       || echo "  [ note ] could not republish inventory to $CP_URL" >&2
+    rm -f "$redo" "$dest"
   else
     echo "  [ note ] requested $backup_type backup FAILED" >&2
   fi

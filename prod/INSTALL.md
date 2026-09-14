@@ -671,6 +671,11 @@ request up on its next run (up to five minutes) and starts `pgbackrest`. Deploy 
 current `check-cluster.sh` — older copies discard the panel's reply, so a **Backup now**
 click sits until it expires.
 
+If `POST /api/infra/report` to `:8443` times out, the core router's Cloudflare-only
+guard is in front of the fleet-node accept (or the accept was never imported). Until
+that rule sits above the drop, `check-cluster.sh` publishes through SSH to `zo-cp-1`
+(`/etc/zuloone/cp-hop` → `cp-report-hop`). Port 22 is already allowed; `:8443` is not.
+
 It reports the archiver from `pg_stat_archiver` **directly**, because `pgbackrest check`
 is not always meaningful. On a node whose config lists only itself, running as a standby,
 there is no primary to test — check exits 0 having verified nothing. The script says which
@@ -709,7 +714,13 @@ ROLE=mongo NODE=mongo CP_URL=https://10.10.0.200:8443 sudo ./check-node.sh --ins
 
 # zo-ci-1
 ROLE=ci CP_URL=https://10.10.0.200:8443 sudo ./check-node.sh --install
+sudo ./ci-prune.sh --install    # daily unused build-cache prune; the panel can also ask
 ```
+
+The CI host's Docker build cache is what filled the 150 GB disk to 82%. `ci-prune.sh`
+runs at 04:00 UTC. Infrastructure → the CI card → **Prune Docker** asks for the same
+thing on the next health check. It never runs `docker image prune -af` — that would
+drop tags a rollback still wants.
 
 The list of names the panel waits for is **Settings → Machines that should report**
 (`Infra:ExpectedNodes`). A name that never reports is shown as `never`, not hidden.

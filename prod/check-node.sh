@@ -109,15 +109,38 @@ case "$worst" in
   2) say "RESULT: BROKEN" ;;
 esac
 
+# Direct POST, then SSH hop to zo-cp-1. :8443 from another subnet is dropped by
+# the core router's Cloudflare-only guard; port 22 is not.
+post_body_to_cp() {
+  local body="$1" dest="$2"
+  if curl -sk --fail-with-body --max-time 10 -o "$dest" \
+           -X POST "${CP_URL%/}/api/infra/report" \
+           -H "X-Node-Token: $(cat "$CP_TOKEN_FILE")" \
+           -H "X-Node-Commands: 1" \
+           -H 'Content-Type: application/json' \
+           --data-binary @"$body"
+  then
+    return 0
+  fi
+  [ -r /etc/zuloone/cp-hop ] || return 1
+  ssh -i /etc/zuloone/cp-hop -o BatchMode=yes -o IdentitiesOnly=yes \
+      -o UserKnownHostsFile=/etc/zuloone/cp-hop.known \
+      -o GlobalKnownHostsFile=/dev/null \
+      -o StrictHostKeyChecking=yes -o ConnectTimeout=5 \
+      zuloone@10.10.0.200 cp-report-hop <"$body" >"$dest"
+}
+
 publish_report() {
   [ -n "$CP_URL" ] || return 0
   if [ ! -r "$CP_TOKEN_FILE" ]; then
     echo "  [ note ] CP_URL is set but $CP_TOKEN_FILE is unreadable — not publishing" >&2
     return 0
   fi
-  local status
+  local status body dest
   case "$worst" in 0) status=healthy ;; 1) status=degraded ;; *) status=broken ;; esac
-  if ! NODE="$NODE" STATUS="$status" ROLE="$ROLE" python3 -c '
+  body="$(mktemp)"
+  dest="$(mktemp)"
+  NODE="$NODE" STATUS="$status" ROLE="$ROLE" python3 -c '
 import datetime, json, os, sys
 sys.stdout.write(json.dumps({
     "node": os.environ["NODE"],
@@ -125,15 +148,40 @@ sys.stdout.write(json.dumps({
     "status": os.environ["STATUS"],
     "report": sys.stdin.read(),
     "checkedAt": datetime.datetime.now(datetime.timezone.utc).isoformat(),
-}))' <<<"$report" \
-      | curl -sk --fail-with-body --max-time 10 -o /dev/null \
-             -X POST "${CP_URL%/}/api/infra/report" \
-             -H "X-Node-Token: $(cat "$CP_TOKEN_FILE")" \
-             -H 'Content-Type: application/json' \
-             --data-binary @-
-  then
+}))' <<<"$report" >"$body"
+  if ! post_body_to_cp "$body" "$dest"; then
     echo "  [ note ] could not publish to $CP_URL" >&2
+    rm -f "$body" "$dest"
+    return 0
   fi
+  rm -f "$body"
+
+  local want_prune
+  want_prune="$(python3 -c '
+import json, sys
+try:
+    d = json.load(open(sys.argv[1], encoding="utf-8"))
+    p = d.get("prune") or {}
+    print("1" if p.get("run") else "")
+except Exception:
+    print("")
+' "$dest")"
+  rm -f "$dest"
+  [ -n "$want_prune" ] && prune_docker
+}
+
+# Unused build cache is what filled zo-ci-1 to 82%. Dangling images only —
+# `image prune -af` would drop tags a rollback still wants. Skip while a
+# runner or buildkit is actually building.
+prune_docker() {
+  if pgrep -f 'Runner.Worker|buildkitd|docker build' >/dev/null; then
+    echo "  [ note ] skip prune — a build is running" >&2
+    return 0
+  fi
+  echo "  [ note ] pruning unused Docker build cache" >&2
+  docker builder prune -af || true
+  docker image prune -f || true
+  df -h / | tail -1 | awk '{print "  [ note ] disk after prune: "$5" used, "$4" free"}' >&2
 }
 publish_report
 
