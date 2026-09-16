@@ -195,3 +195,9 @@ networks:
     ipam:
       config:
         - subnet: 172.30.1.0/24
+          # Keep the pinned mongo address out of the dynamic pool. After a
+          # daemon restart tenants come up first, steal 172.30.1.2, and mongo
+          # then dies with "Address already in use" (exit 255) until someone
+          # moves the tenant off that IP by hand.
+          aux_addresses:
+            mongo: 172.30.1.2
