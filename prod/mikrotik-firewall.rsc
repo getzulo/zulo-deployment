@@ -105,6 +105,18 @@ add chain=forward action=accept connection-state=established,related \
 add chain=forward action=drop connection-state=invalid \
     comment="drop invalid"
 
+# FIRST, deliberately. This one accept carries the Patroni cluster across
+# 10.10.0/1/2, the panel to its tenants, and everything else the estate does
+# with itself.
+#
+# In the first draft it sat second-to-last, one line above the deny. A partial
+# apply left the deny standing without it and cut the database replica from all
+# three of cp, app and ci — reachable neither on 5432 nor by ping. The broadest
+# load-bearing accept belongs at the top of the chain, where an apply that stops
+# early fails open on internal traffic instead of severing it.
+add chain=forward action=accept src-address=10.10.0.0/16 dst-address=10.10.0.0/16 \
+    comment="LAN to LAN — tighten per tier only once everything else is proven"
+
 # --- RDP fleet. Matched on the POST-NAT destination, which is what the filter
 #     actually sees, and gated by the allow-list as was always intended.
 add chain=forward action=accept protocol=tcp dst-port=3389 src-address-list=RDP_ALLOWED \
@@ -192,9 +204,6 @@ add chain=forward action=accept src-address=10.10.0.0/16 \
 
 add chain=forward action=accept out-interface=bridge_wan src-address=10.10.0.0/16 \
     comment="LAN out to the internet"
-
-add chain=forward action=accept src-address=10.10.0.0/16 dst-address=10.10.0.0/16 \
-    comment="LAN to LAN — tighten per tier once the above is proven"
 
 # --- THE LINE THAT MAKES THIS A DEFAULT-DENY FIREWALL.
 #     Everything the chain did not name above stops here.
