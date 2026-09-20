@@ -87,8 +87,10 @@ Two rules carry most of the security weight:
   not a shell on the box holding every tenant's data. (Two narrow LAN exceptions exist
   inbound to that subnet: 5432 to the standby, and 53 to the pre-existing resolver at
   `10.10.2.10`. Both are scoped to one host and one port.)
-- **The control plane is not in the DMZ.** It lives in the core tier, unreachable from
-  Cloudflare, because it is the most valuable target in the system (§4.1).
+- **The control plane is not in the DMZ.** It lives in the core tier, because it is the
+  most valuable target in the system (§4.1). It IS reachable from Cloudflare — one
+  forwarded port, Cloudflare source addresses only, behind Access — and that is a
+  deliberate narrowing, not an exception to the rule above.
 
 ## 3. VM inventory
 
@@ -151,17 +153,37 @@ It is the highest-value target in the system. Compromising it yields, in one ste
   `JwtSigningKey` **in plaintext** (`Registry/Tenant.cs` owns this as an interim
   choice). A JWT signing key is enough to mint a valid token for any user of that tenant.
 
-And it currently has **no authentication of any kind** — no `[Authorize]`, no API key,
-no operator login. The code says as much in a comment on `Api/TenantsController.cs`.
+#### What changed since this section was first written
 
-So: not in the DMZ, no Cloudflare route, no port forward. Operators reach it over
-**WireGuard into the core subnet** (or an SSH tunnel). Cloudflare Access is a
-reasonable convenience layer *later* — never as the only gate, because with no
-app-level auth a single misconfigured Access policy is total compromise.
+The two paragraphs that used to stand here said the panel had **no authentication of
+any kind** and must **not be deployed until it did**. Both were true when written and
+both are now wrong, in opposite directions — which is the worst way for a security note
+to age, because a reader trusts it either way.
 
-**Do not deploy it until it has authentication.** The first tenant runs perfectly well
-provisioned by hand (README §8); the control plane is an operator convenience that
-starts paying off around the fifth tenant.
+What is true today:
+
+- **It has authentication**, two independent schemes, and they are not optional.
+  `Auth/AuthSetup.cs` sets `RequireAuthenticatedUser()` as **both** the default and the
+  fallback policy, so an endpoint that forgets `[Authorize]` is still closed. The
+  schemes are Cloudflare Access (JWT read only from the `Cf-Access-Jwt-Assertion`
+  header, validated against the team domain, then an e-mail allowlist) and a
+  break-glass operator session (bcrypt password plus mandatory TOTP with a replay
+  guard), the latter restricted to a loopback-bound port reachable only over SSH.
+- **It is reachable from the internet**, deliberately. `mikrotik-firewall.rsc` forwards
+  WAN → `10.10.0.200:8443` for Cloudflare source addresses only, and the pre-rollback
+  checklist in that file lists `https://cp.zulo.one/` as a thing to verify. The
+  compose file binds that port to the LAN address specifically so the router, not the
+  host, decides who arrives.
+
+So the gate is two-layered on purpose: Cloudflare Access in front, application
+authentication behind it. The original warning — that Access must never be the *only*
+gate — still stands, and is now satisfied rather than pending.
+
+**What has NOT changed**, and is still the reason this VM sits in the core tier: the
+registry stores each tenant's `DatabasePassword` and `JwtSigningKey` in plaintext, and
+the panel holds a Docker socket route and a Postgres admin connection. Compromising it
+is still a one-step path to every tenant. Treat any new inbound path to this host as a
+change to that blast radius, not as a routing detail.
 
 ### 4.2 Reaching Docker without handing over root
 
