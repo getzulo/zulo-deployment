@@ -1139,6 +1139,20 @@ Secrets and variables → Actions:
 |---|---|
 | `WIKI_READ_TOKEN` | Read access to `getzulo/zulo.one`. Its wiki is the source for the `/dev` documentation zone, and that repository is private, so `actions/checkout` cannot reach it with the job's own token. |
 
+A fine-grained PAT with `Contents: Read` on `getzulo/zulo.one` alone is enough. It has to
+be created by hand in a GitHub account — the three cheaper-looking alternatives are all
+closed, and each was tried:
+
+- **A read-only deploy key on `zulo.one`** would be the right shape — one repository,
+  read-only, no person attached. The API refuses it: *"Deploy keys are disabled for this
+  repository"*, an organisation policy that needs `admin:org` to change.
+- **The runner host's own SSH key** (`deploy@zo-ci-1`) has no GitHub access at all:
+  `git@github.com: Permission denied (publickey)`.
+- **The job's `GITHUB_TOKEN`** is scoped to the repository it runs in and cannot read a
+  sibling, which is the whole reason a second credential is needed.
+
+GitHub does not expose PAT creation over its API, so this step cannot be automated.
+
 **Deploy through the workflow rather than by hand.** A manual `docker build` on the host
 skips the documentation gate, and that gate is the only thing standing between the
 public site and `roadmap.md`, the internal specifications and the gap analyses. It also
