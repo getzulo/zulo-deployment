@@ -18,8 +18,11 @@
 # page promising reliable hosting would be lying at exactly that moment.
 #
 # PREREQUISITES, both easy to forget and both silent until they are not:
-#   1. A Cloudflare Origin certificate for getzulo.com / *.getzulo.com in
-#      ../certs/ as getzulo.pem + getzulo.key — see traefik/dynamic/tls.yml.
+#   1. A Cloudflare Origin certificate for getzulo.com / *.getzulo.com, placed on
+#      zo-app-1 as /opt/zuloone/certs/getzulo.pem + getzulo.key. That directory is
+#      NOT in this repository and never will be — .gitignore drops certs/ and
+#      *.key, because the Origin CA private key is shown once at issuance and is a
+#      full origin-impersonation credential. See traefik/dynamic/tls.yml.
 #      Without it Cloudflare answers 526 for the site alone.
 #   2. getzulo.com added as a site in Cloudflare, proxied, with an A record for
 #      @ and www. The existing firewall rule already admits Cloudflare to 8443;

@@ -976,9 +976,14 @@ Two prerequisites, both silent until they are not:
 Then deploy it alongside the tenant stack:
 
 ```bash
-cd /opt/zuloone/prod
+cd /opt/zuloone
 SITE_IMAGE=10.10.0.210:5000/getzulo-site:2026.9.0   docker compose -f docker-compose.yml -f docker-compose.site.yml up -d site
 ```
+
+The working directory is `/opt/zuloone`, not `/opt/zuloone/prod` — Phase 9 copies the
+CONTENTS of `prod/` up one level (`cp -r /root/prod/* /opt/zuloone/`). That is also why
+the certificates live in `/opt/zuloone/certs/`: Traefik mounts `./certs` relative to the
+compose file, which sits at the top of that directory.
 
 The image is built and pushed by the `deploy` workflow in `getzulo/getzulo.com`, which
 also runs the documentation gate that keeps internal material off the public site.
