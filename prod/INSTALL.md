@@ -1117,6 +1117,34 @@ Labels must include `self-hosted`, `linux`, `x64` to match `runs-on` in the work
 The runner is in the `docker` group, which is root-equivalent on this VM. The workflow
 already refuses to run on pull requests from forks; keep that guard.
 
+### 8.1 A second runner for the site
+
+GitHub self-hosted runners are scoped to the repository they were registered against, so
+the one above serves `getzulo/zulo.one` and **nothing else** — `getzulo/getzulo.com`
+sees zero runners and its deploy job queues forever, with no error to read. One machine
+can host several runners; each needs its own directory.
+
+```bash
+# on zo-ci-1, as deploy — a SEPARATE directory, not the existing one
+mkdir -p ~/actions-runner-site && cd ~/actions-runner-site
+# GitHub → getzulo/getzulo.com → Settings → Actions → Runners →
+# New self-hosted runner (Linux x64). Run the download and ./config.sh it shows.
+./svc.sh install && ./svc.sh start
+```
+
+The site's workflow also needs one secret, on `getzulo/getzulo.com` → Settings →
+Secrets and variables → Actions:
+
+| Secret | What it is |
+|---|---|
+| `WIKI_READ_TOKEN` | Read access to `getzulo/zulo.one`. Its wiki is the source for the `/dev` documentation zone, and that repository is private, so `actions/checkout` cannot reach it with the job's own token. |
+
+**Deploy through the workflow rather than by hand.** A manual `docker build` on the host
+skips the documentation gate, and that gate is the only thing standing between the
+public site and `roadmap.md`, the internal specifications and the gap analyses. It also
+skips the link check, which has already caught two classes of broken navigation that a
+build reports as success.
+
 Then cut the first release from your workstation:
 
 ```bash
