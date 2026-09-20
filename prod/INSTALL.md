@@ -938,10 +938,50 @@ then: **Cloudflare → Add a site → `zulo.one` → Free**, copy the two namese
 assigns, and replace the nameservers at the registrar. Propagation is usually an hour or
 two and can take a day; Cloudflare e-mails when it completes.
 
-`getzulo.com` is a separate matter and does **not** belong on this origin. It is a
-marketing and documentation site: put it on Cloudflare Pages, where it costs nothing,
-needs no origin certificate, and — the actual reason — keeps a public static site off
-the machine that runs customer databases.
+#### `getzulo.com` runs on this origin (changed 2026-09-20)
+
+This paragraph used to say the opposite — put the site on Cloudflare Pages, to keep a
+public static site off the machine that runs customer workloads. That reasoning was
+sound and was overtaken by the demo feature.
+
+From Pages, a static site cannot reach the control plane, so handing a visitor a demo
+workspace needed a Cloudflare Worker relaying the request with a shared secret across
+the internet. Served from the fleet, that is a call inside the network: no Worker, no
+public secret, no second deployment path, and one fewer provider to hold credentials
+for.
+
+The old reasoning is also worth restating accurately, because it was loosely put.
+`zo-app-1` does not run customer databases — those are on `zo-pg-1`/`zo-pg-2`. What it
+runs is tenant containers, which compile and execute C# supplied by tenant users. A
+container of pre-built HTML behind nginx, with no environment, no volumes and no
+credentials, is a far smaller surface than what already lives there.
+
+**What it costs, plainly: the site is down whenever `zo-app-1` is down.** That is
+accepted rather than mitigated, because during such an incident the demos are down (they
+are containers on this host) and so are the customer tenants — a live marketing page
+promising reliable hosting would be lying at that exact moment.
+
+Two prerequisites, both silent until they are not:
+
+1. **A second Origin certificate.** The wildcard issued above covers `zulo.one` and
+   `*.zulo.one`; `getzulo.com` is simply not in it. Issue another (SSL/TLS → Origin
+   Server → Create Certificate) for `getzulo.com` and `*.getzulo.com`, and place the
+   pair in `certs/` as `getzulo.pem` + `getzulo.key`. Traefik selects by SNI — see
+   `traefik/dynamic/tls.yml`. Skip this and the site alone answers **526** while every
+   tenant keeps working, which reads as a site fault and is a certificate fault.
+2. **`getzulo.com` added as a Cloudflare site**, proxied, with `A @` and `A www`
+   pointing at the public IP. The firewall already admits Cloudflare to 8443; nothing
+   on the MikroTik changes.
+
+Then deploy it alongside the tenant stack:
+
+```bash
+cd /opt/zuloone/prod
+SITE_IMAGE=10.10.0.210:5000/getzulo-site:2026.9.0   docker compose -f docker-compose.yml -f docker-compose.site.yml up -d site
+```
+
+The image is built and pushed by the `deploy` workflow in `getzulo/getzulo.com`, which
+also runs the documentation gate that keeps internal material off the public site.
 
 ### 7.1 DNS
 

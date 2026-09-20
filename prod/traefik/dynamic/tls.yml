@@ -25,6 +25,20 @@ tls:
     - certFile: /certs/origin.pem
       keyFile: /certs/origin.key
 
+    # getzulo.com — the public site. A SEPARATE certificate, because the wildcard
+    # above covers `zulo.one` and `*.zulo.one` and a second domain is simply not
+    # in it. Without this entry Traefik would serve the default certificate for
+    # getzulo.com, Cloudflare would reject it under Full (strict), and the site
+    # would answer 526 while every tenant kept working — a failure that looks
+    # like a site problem and is a certificate problem.
+    #
+    # Issue it the same way (SSL/TLS → Origin Server → Create Certificate) with
+    # hostnames `getzulo.com` and `*.getzulo.com`, then place the pair in
+    # ../certs/ as getzulo.pem / getzulo.key. Traefik picks per-request by SNI,
+    # so no router-level configuration is needed.
+    - certFile: /certs/getzulo.pem
+      keyFile: /certs/getzulo.key
+
   options:
     default:
       # Cloudflare speaks TLS 1.2+ to origins; there is no legacy client on this

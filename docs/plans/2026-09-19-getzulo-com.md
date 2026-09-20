@@ -28,6 +28,14 @@ control plane с провижнингом, снапшотами и апгрей�
 ### Что уже решено и не переигрывается
 
 `zulo-deployment/prod/INSTALL.md:941` уже предписывает: getzulo.com живёт на
+
+> **Изменение 2026-09-20.** Сайт переехал с Cloudflare Pages на собственный флот,
+> за тот же Traefik, что маршрутизирует тенантов. Это отменяет Cloudflare Worker
+> как обязательное звено: форма демо теперь может звать control plane внутри
+> сети, без общего секрета, летающего через интернет. Пункты B14 и часть B10
+> ниже написаны до этого решения и требуют пересмотра — оставлены как есть,
+> чтобы было видно, что именно отменяется.
+
 **Cloudflare Pages**, отдельно от origin'а — «чтобы публичный статический сайт не стоял
 на машине, где крутятся базы клиентов». Апекс `zulo.one` и `www` уже припаркованы на
 `192.0.2.1` под Redirect Rule на маркетинговый сайт (§7.1). План этому следует.
@@ -38,7 +46,7 @@ control plane с провижнингом, снапшотами и апгрей�
 
 | Решение | Значение | Почему так |
 |---|---|---|
-| Хостинг сайта | Cloudflare Pages | Предписано `INSTALL.md:941`; ноль origin-сертификатов, ноль нагрузки на `zo-app-1` |
+| Хостинг сайта | **Свой флот, за Traefik** (изменено 2026-09-20) | Со статики на Pages не дотянуться до control plane, и заявка на демо потребовала бы Cloudflare Worker с общим секретом через интернет. На флоте это вызов внутри сети — мост исчезает целиком. Цена: сайт лежит вместе с `zo-app-1`. `INSTALL.md` §7.0 переписан |
 | Стек | Next.js 16 + next-intl 4 + Tailwind 4, `output: "export"` | Готовый внутренний шаблон — `d:\Sources\fistashion\next.config.ts`; тот же стек в `zulo.web/apps/site` |
 | Доки | **Fumadocs** (MDX, App Router, i18n, статический поиск) | Сайдбар/TOC/поиск/i18n из коробки, один стек с витриной. Fallback, если упрётся в `output: export` — `@opennextjs/cloudflare` |
 | Репозиторий | новый `getzulo/getzulo.com` | Отдельный CI, отдельный деплой-таргет; вики втягивается сборкой, не копируется |
@@ -110,7 +118,10 @@ getzulo.com/
 урезается до `en|ru|ar|uk`. В корневом layout — `<html lang={locale} dir={localeDir(locale)}>`.
 
 Деплой: self-hosted runner `zo-ci-1` (org на GitHub Free — бережём минуты), `pnpm build`
-→ `wrangler pages deploy out`. Секреты `CLOUDFLARE_API_TOKEN`, `CLOUDFLARE_ACCOUNT_ID` в
+→ `docker build` → реестр `10.10.0.210:5000` → `docker compose … up -d site` на `zo-app-1`.
+Нужен второй Origin-сертификат на `getzulo.com` (wildcard покрывает только
+`*.zulo.one`) и раннер, зарегистрированный на этот репозиторий. Прежние секреты
+`CLOUDFLARE_API_TOKEN` / `CLOUDFLARE_ACCOUNT_ID` больше не нужны; было — в
 GitHub Environment `production`. Прод — только `workflow_dispatch` + push в `main`,
 как в `zulo.web/.github/workflows/deploy-site-prod.yml`.
 

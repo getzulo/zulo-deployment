@@ -1,0 +1,74 @@
+# getzulo.com — the public marketing and documentation site.
+#
+#   docker compose -f docker-compose.yml -f docker-compose.site.yml up -d site
+#
+# A separate file so the site can be deployed, restarted and rolled back without
+# touching the tenant stack, and so an operator who does not run the site simply
+# never passes this file.
+#
+# WHY IT IS HERE AT ALL. INSTALL.md §7.0 used to send this to Cloudflare Pages,
+# and the reason it no longer does is the demo flow: from Pages, a static site
+# cannot reach the control plane, so a demo request needed a Cloudflare Worker
+# relaying it with a shared secret across the internet. On the fleet that becomes
+# a call inside the network and the entire bridge disappears.
+#
+# The cost, stated plainly: the site is down whenever zo-app-1 is down. That is
+# tolerable because during such an incident the demos are down too (they are
+# containers on this host) and so are the customer tenants — a live marketing
+# page promising reliable hosting would be lying at exactly that moment.
+#
+# PREREQUISITES, both easy to forget and both silent until they are not:
+#   1. A Cloudflare Origin certificate for getzulo.com / *.getzulo.com in
+#      ../certs/ as getzulo.pem + getzulo.key — see traefik/dynamic/tls.yml.
+#      Without it Cloudflare answers 526 for the site alone.
+#   2. getzulo.com added as a site in Cloudflare, proxied, with an A record for
+#      @ and www. The existing firewall rule already admits Cloudflare to 8443;
+#      nothing on the MikroTik changes.
+
+services:
+  site:
+    image: ${SITE_IMAGE:?set SITE_IMAGE, e.g. 10.10.0.210:5000/getzulo-site:2026.9.0}
+    restart: unless-stopped
+
+    # No environment, no volumes, no secrets. The image is pre-built HTML and an
+    # nginx config; there is nothing here for a compromise to read. That is the
+    # whole reason this is acceptable on a host that also runs tenant containers.
+
+    labels:
+      traefik.enable: "true"
+      traefik.docker.network: zuloone-prod_edge
+      # Both names on one router: Cloudflare is told to proxy www, and a visitor
+      # who types it must not meet a certificate error on the way to the
+      # redirect.
+      traefik.http.routers.site.rule: Host(`getzulo.com`) || Host(`www.getzulo.com`)
+      traefik.http.routers.site.entrypoints: websecure
+      # Unlike the tenants, this one does NOT ride the default certificate — the
+      # wildcard is for *.zulo.one. Traefik selects the getzulo pair by SNI from
+      # the file provider's certificate list.
+      traefik.http.routers.site.tls: "true"
+      traefik.http.services.site.loadbalancer.server.port: "8080"
+      # www → apex, permanently. Done at the edge rather than in nginx so the
+      # site image stays domain-agnostic and can be run locally as-is.
+      traefik.http.routers.site.middlewares: site-www@docker
+      traefik.http.middlewares.site-www.redirectregex.regex: ^https://www\.getzulo\.com/(.*)
+      traefik.http.middlewares.site-www.redirectregex.replacement: https://getzulo.com/$${1}
+      traefik.http.middlewares.site-www.redirectregex.permanent: "true"
+
+    networks:
+      # Edge only. The site has no reason to reach the data bridge, and not
+      # attaching it is cheaper than remembering not to use it.
+      - edge
+
+    healthcheck:
+      # Served by the nginx config itself, so this answers even when every page
+      # is missing — which is the case worth detecting after a bad build.
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8080/healthz"]
+      interval: 30s
+      timeout: 3s
+      retries: 3
+      start_period: 5s
+
+networks:
+  edge:
+    external: true
+    name: zuloone-prod_edge
