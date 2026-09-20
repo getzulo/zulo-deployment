@@ -25,8 +25,12 @@
 #      full origin-impersonation credential. See traefik/dynamic/tls.yml.
 #      Without it Cloudflare answers 526 for the site alone.
 #   2. getzulo.com added as a site in Cloudflare, proxied, with an A record for
-#      @ and www. The existing firewall rule already admits Cloudflare to 8443;
-#      nothing on the MikroTik changes.
+#      @ and www.
+#   3. An Origin Rule on that zone rewriting the destination port to 8443. The
+#      router dst-nats 8443 -> 10.10.1.220:443 and has NO rule for inbound 443,
+#      so without this Cloudflare times out and the site answers 522 while every
+#      zulo.one host keeps working. Nothing on the MikroTik changes; its rule is
+#      per-port, not per-hostname.
 
 services:
   site:

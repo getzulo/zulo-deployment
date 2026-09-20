@@ -970,8 +970,25 @@ Two prerequisites, both silent until they are not:
    `traefik/dynamic/tls.yml`. Skip this and the site alone answers **526** while every
    tenant keeps working, which reads as a site fault and is a certificate fault.
 2. **`getzulo.com` added as a Cloudflare site**, proxied, with `A @` and `A www`
-   pointing at the public IP. The firewall already admits Cloudflare to 8443; nothing
-   on the MikroTik changes.
+   pointing at the public IP.
+3. **An Origin Rule on the `getzulo.com` zone rewriting the destination port to 8443.**
+   This is the one that bites, and it bites before the certificate does. The router
+   accepts nothing but 8443 from Cloudflare — `mikrotik.rsc` dst-nats `8443 → 10.10.1.220:443`
+   and there is deliberately no rule for inbound 443. Cloudflare defaults to 443, the
+   packet is dropped, and the site answers **522 (connection timed out)** while
+   `zulo.one` keeps working, because that zone already has the rule. Nothing on the
+   MikroTik changes — the existing firewall rule is per-port, not per-hostname, and
+   already admits this traffic.
+
+Expect the symptoms to change in a predictable order as each piece lands, and do not
+read an earlier failure as a later one:
+
+| What answers | What is still missing |
+|---|---|
+| `522` timeout | The Origin Rule above — Cloudflare never reached the origin |
+| `526` invalid certificate | `getzulo.pem` / `getzulo.key`; Traefik is serving the `*.zulo.one` default, which does not cover this domain |
+| `404` from Traefik | The site container itself — Traefik is answering but has no router for this host |
+| The site | Nothing |
 
 Then deploy it alongside the tenant stack:
 
