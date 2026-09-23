@@ -75,6 +75,70 @@ services:
       retries: 3
       start_period: 5s
 
+  # The customer cabinet. A SECOND application on the same hostname — a Next.js
+  # multi-zone — not a route inside the site.
+  #
+  # Why the split is physical rather than a router rule: the `site` service above
+  # says "no environment, no volumes, no secrets", and that property is the whole
+  # argument for putting a public site on a host that also runs tenant
+  # containers. The cabinet holds a customer's control-plane bearer and
+  # per-tenant credentials in its process, so it cannot have that property. Two
+  # containers means a flaw in the brochure cannot read a token.
+  #
+  # Why the paths are split HERE and not in the site's nginx: the same reason the
+  # www redirect above is a Traefik middleware — the site image stays
+  # domain-agnostic and runnable as-is, and the static container never needs to
+  # know the cabinet's address or be up for the cabinet to answer.
+  cabinet:
+    image: ${CABINET_IMAGE:?set CABINET_IMAGE, e.g. 10.10.0.210:5000/getzulo-cabinet:2026.9.0}
+    restart: unless-stopped
+
+    # Secrets land here in D4/D5 (the control-plane base URL and the service
+    # credential it presents). Until then the zone answers without any, which is
+    # why it can be deployed and smoke-tested before the portal is switched on.
+
+    labels:
+      traefik.enable: "true"
+      traefik.docker.network: zuloone-prod_edge
+      # Three shapes of path belong to this zone and nothing else does:
+      #   /api/cabinet/**        route handlers (sessions, OAuth callbacks)
+      #   /cabinet-static/**     its assets — `assetPrefix` exists so these do
+      #                          NOT collide with the site's own /_next/**
+      #   /<locale>/cabinet/**   the pages themselves
+      # The locale list is closed on purpose: a bare regexp of `/*/cabinet` would
+      # hand this zone any first segment somebody invents.
+      traefik.http.routers.cabinet.rule: >-
+        Host(`getzulo.com`) && (PathPrefix(`/api/cabinet`) ||
+        PathPrefix(`/cabinet-static`) ||
+        PathRegexp(`^/(en|ru|ar|uk)/cabinet`))
+      # Traefik derives priority from rule length, which already puts this ahead
+      # of the site's Host-only rule. Stated anyway: the day somebody lengthens
+      # the site rule, the cabinet must not silently lose.
+      traefik.http.routers.cabinet.priority: "100"
+      traefik.http.routers.cabinet.entrypoints: websecure
+      traefik.http.routers.cabinet.tls: "true"
+      traefik.http.services.cabinet.loadbalancer.server.port: "8080"
+      traefik.http.routers.cabinet.middlewares: cabinet-noindex@docker
+      # A customer portal's sign-in page in search results is an invitation to
+      # credential stuffing. The app sets this too; the edge repeats it so a
+      # future page that forgets the metadata is still covered.
+      traefik.http.middlewares.cabinet-noindex.headers.customresponseheaders.X-Robots-Tag: "noindex, nofollow"
+      # Deliberately NO blanket `Cache-Control: no-store` here: it would also hit
+      # /cabinet-static/_next/**, whose files are fingerprinted and meant to be
+      # cached hard. The app sets no-store on the responses that need it.
+
+    networks:
+      # Edge today. The data bridge is added in D5, when this starts calling the
+      # control plane.
+      - edge
+
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8080/api/cabinet/health"]
+      interval: 30s
+      timeout: 3s
+      retries: 3
+      start_period: 10s
+
 networks:
   edge:
     external: true
