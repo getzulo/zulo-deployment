@@ -97,15 +97,32 @@ services:
     # credential it presents). Until then the zone answers without any, which is
     # why it can be deployed and smoke-tested before the portal is switched on.
     environment:
-      # Reached over the internal network. `/api/portal/**` is NOT published to
-      # the internet, and that is the point: nothing at the edge routes to it,
-      # so no Cloudflare Access bypass is needed on the panel's hostname.
-      CONTROL_PLANE_URL: ${CONTROL_PLANE_URL:?set CONTROL_PLANE_URL, e.g. http://10.10.1.221:8080}
+      # Reached over the internal network — the LAN address on zo-cp-1, port
+      # 8443 (see docker-compose.controlplane.yml), NOT the internet-facing
+      # Cloudflare hostname. `/api/portal/**` is NOT published to the internet,
+      # and that is the point: nothing at the edge routes to it, so no
+      # Cloudflare Access bypass is needed on the panel's hostname.
+      #
+      # The value is an in-SAN name (cp.zulo.one), not the bare IP: the Origin
+      # CA leaf on zo-cp-1 carries SAN *.zulo.one, and Node's TLS validation
+      # fails a bare-IP connection on hostname mismatch. `extra_hosts` below
+      # points that name at the internal address instead of Cloudflare's edge,
+      # and the image trusts the Origin CA root via NODE_EXTRA_CA_CERTS (see
+      # Dockerfile) so the leaf itself validates.
+      CONTROL_PLANE_URL: ${CONTROL_PLANE_URL:?set CONTROL_PLANE_URL, e.g. https://cp.zulo.one:8443}
       # 32 bytes, base64. Seals the session cookie; the process refuses to start
       # without it, deliberately — a default would be identical everywhere and
       # would let anyone with the source mint a session for any address.
       #   node -e "console.log(require('crypto').randomBytes(32).toString('base64'))"
-      CABINET_SESSION_KEY: ${CABINET_SESSION_KEY:?set CABINET_SESSION_KEY in cp.env}
+      CABINET_SESSION_KEY: ${CABINET_SESSION_KEY:?set CABINET_SESSION_KEY in zo-app-1's own .env, NOT cp.env — different host}
+
+    extra_hosts:
+      # cp.zulo.one is a real public record, proxied by Cloudflare — resolving
+      # it normally would send this container's traffic out to the internet and
+      # back in, which container-egress.sh's default-deny would then also have
+      # to be opened for. This override keeps the name (for TLS SAN matching)
+      # but sends the packets straight to the internal address instead.
+      - "cp.zulo.one:10.10.0.200"
 
     labels:
       traefik.enable: "true"
@@ -138,8 +155,12 @@ services:
       # cached hard. The app sets no-store on the responses that need it.
 
     networks:
-      # Edge today. The data bridge is added in D5, when this starts calling the
-      # control plane.
+      # Edge only, and permanently — not a staging step. The control plane is
+      # not a container on this host's data bridge; it is a different VM
+      # (zo-cp-1) reached over the LAN. Container egress leaves via zo-edge0,
+      # NATed behind this host's own address, same as any tenant's Postgres
+      # traffic — see container-egress.sh's CP_HOST/CP_PORT rule, which is what
+      # actually permits the connection through the default-deny.
       - edge
 
     healthcheck:

@@ -46,6 +46,13 @@ PG_PORT="${PG_PORT:-5432}"
 MONGO_NODES="${MONGO_NODES:-172.30.1.2}"
 MONGO_PORT="${MONGO_PORT:-27017}"
 
+# Customer cabinet -> control plane. Edge only: unlike a tenant, the cabinet
+# container is not on $DATA_BRIDGE (see docker-compose.site.yml — "Edge today,
+# the data bridge is added in D5"). Add a DATA_BRIDGE rule here the day that
+# changes, or the cabinet will time out reaching the panel over its new route.
+CP_HOST="${CP_HOST:-10.10.0.200}"
+CP_PORT="${CP_PORT:-8443}"
+
 # Extra TCP destinations, space-separated. Empty = no extra hole.
 #   587 465                  any destination on that port (survives Gmail A-record rotation)
 #   smtp.gmail.com:587       pin to today's A records of that host
@@ -88,6 +95,9 @@ apply() {
     iptables -A DOCKER-USER -i "$BRIDGE" -d "$node" -p tcp --dport "$MONGO_PORT" -j RETURN
     iptables -A DOCKER-USER -i "$DATA_BRIDGE" -d "$node" -p tcp --dport "$MONGO_PORT" -j RETURN
   done
+
+  # Cabinet -> control plane, edge only (see CP_HOST/CP_PORT declaration above).
+  iptables -A DOCKER-USER -i "$BRIDGE" -d "$CP_HOST" -p tcp --dport "$CP_PORT" -j RETURN
 
   # Optional: SMTP / Seq / similar. Must sit ABOVE the catch-all DROP.
   # Hostnames are resolved now; the rule matches the IP, not the name.
@@ -239,6 +249,8 @@ Environment=DATA_SUBNET=${DATA_SUBNET}
 Environment="PG_NODES=${PG_NODES}"
 Environment="MONGO_NODES=${MONGO_NODES}"
 Environment=MONGO_PORT=${MONGO_PORT}
+Environment=CP_HOST=${CP_HOST}
+Environment=CP_PORT=${CP_PORT}
 Environment="SMTP_DESTS=${SMTP_DESTS}"
 
 [Install]
@@ -270,6 +282,7 @@ closed port, not the firewall; insist on a TIMEOUT.
   c=\$(docker ps -q -f name=tenant)
   docker exec \$c bash -c 'timeout 5 bash -c "</dev/tcp/${PG_NODES%% *}/${PG_PORT}" && echo PG-OK'
   docker exec \$c bash -c 'timeout 5 bash -c "</dev/tcp/${MONGO_NODES%% *}/${MONGO_PORT}" && echo MONGO-OK'
+  docker exec \$c bash -c 'timeout 5 bash -c "</dev/tcp/${CP_HOST}/${CP_PORT}" && echo CP-OK'
   docker exec \$c bash -c 'timeout 5 bash -c "</dev/tcp/10.10.0.210/5000"  || echo BLOCKED-registry'
   docker exec \$c bash -c 'timeout 5 bash -c "</dev/tcp/10.10.0.1/80"     || echo BLOCKED-gateway'
   docker exec \$c bash -c 'timeout 5 bash -c "</dev/tcp/1.1.1.1/443"      || echo BLOCKED-internet'
