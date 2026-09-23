@@ -96,6 +96,16 @@ services:
     # Secrets land here in D4/D5 (the control-plane base URL and the service
     # credential it presents). Until then the zone answers without any, which is
     # why it can be deployed and smoke-tested before the portal is switched on.
+    environment:
+      # Reached over the internal network. `/api/portal/**` is NOT published to
+      # the internet, and that is the point: nothing at the edge routes to it,
+      # so no Cloudflare Access bypass is needed on the panel's hostname.
+      CONTROL_PLANE_URL: ${CONTROL_PLANE_URL:?set CONTROL_PLANE_URL, e.g. http://10.10.1.221:8080}
+      # 32 bytes, base64. Seals the session cookie; the process refuses to start
+      # without it, deliberately — a default would be identical everywhere and
+      # would let anyone with the source mint a session for any address.
+      #   node -e "console.log(require('crypto').randomBytes(32).toString('base64'))"
+      CABINET_SESSION_KEY: ${CABINET_SESSION_KEY:?set CABINET_SESSION_KEY in cp.env}
 
     labels:
       traefik.enable: "true"
