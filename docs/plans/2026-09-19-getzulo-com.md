@@ -254,10 +254,22 @@ EU + PDPL для Саудовской Аравии), Terms, DPA, SLA, списо
 шаблон через вынесенный из `RestoreJobHandler` `TenantCloneService`. Посетитель попадает
 на **Cloudflare Worker**, тот проверяет Turnstile и зовёт token-gated `[AllowAnonymous]`
 эндпоинт на `cp.zulo.one`, скроенный по образцу `POST /api/infra/report`. Эндпоинт
-**атомарно занимает** демо из пула одним `UPDATE … WHERE Id = (SELECT … FOR UPDATE SKIP
-LOCKED) RETURNING`, сбрасывает пароль, ставит `ExpiresAt = now + 24h` и отдаёт URL с
-кредами в том же ответе. Тот же сервис жнёт просроченное через существующий
+**атомарно занимает** демо из пула условным `UPDATE` с повторным чтением кандидата,
+ставит `ExpiresAt = now + 24h`, одноразово читает уже рандомизированный при сборке
+пароль и отдаёт URL с кредами в том же ответе. Тот же сервис жнёт просроченное через существующий
 `TenantProvisioner.DeleteAsync`.
+
+**Статус на 2026-09-24.** B1–B9 и B11–B13 реализованы; движок и операторский экран
+дошли до предусмотренной ниже точки остановки. Проверки: 138/138 .NET-тестов на
+реальном PostgreSQL, `npm run build`, `npm run lint`. Наблюдаемые проверки на живом
+стенде из последней колонки ещё не проводились. B10 и B14 намеренно закрыты до недели
+ручной эксплуатации. В B16 тесты уже запускаются в CI напрямую по `.csproj`, а
+secret-grep расширен; публичный smoke остаётся вместе с B10. Отдельный `.sln` осознанно
+не добавлен: в репозитории два проекта, и CI уже явно собирает оба. Для B15 создана
+модель `DemoData` и ручной пакет на 412 строк (24 контрагента, 60 товаров,
+3 складские зоны, 24 ячейки, VAT-SA catalog, начальные остатки, 200 реализаций и
+40 закупок); dry-run без ошибок. Проведение
+импортированных черновиков на golden-тенанте и замер итогового дампа ещё остаются.
 
 | # | Задача | Ключевые файлы | Наблюдаемо |
 |---|---|---|---|
@@ -266,7 +278,7 @@ LOCKED) RETURNING`, сбрасывает пароль, ставит `ExpiresAt =
 | **B3** | `ContainerLimits(MemoryBytes, Cpu, PidsLimit)` в `TenantContainerService.RunAsync` | `Provisioning/TenantContainerService.cs` + 6 вызовов | `docker inspect` демо: `805306368 1000000000 256`; у `t1` — `0` |
 | **B4** | **Чистый рефакторинг:** `TenantCloneService` вынесен из `RestoreJobHandler` | `Provisioning/TenantCloneService.cs`, `Jobs/RestoreJobHandler.cs` | Лог джоба Restore **побайтно совпадает** с логом до коммита |
 | **B5** | Политика статиками: `DemoSlug`, `DemoQuota.Decide(...)`, `DemoLifetime.IsReapable(...)`; `RegisterAsync` запрещает префикс `demo-` | `Provisioning/Demo/*.cs`, `Provisioning/TenantProvisioner.cs`, 3 файла тестов | `dotnet test` — ~25 фактов; `POST /api/tenants {"slug":"demo-acme"}` → 400 |
-| **B6** | `DemoPool.TryClaimAsync` — один `UPDATE … FOR UPDATE SKIP LOCKED`; `ResetPasswordAsync` получает `mustChangePassword = false` | `Provisioning/Demo/DemoPool.cs`, `Provisioning/TenantAdminService.cs` | 5 параллельных запросов при пуле 2 → ровно 2 `ready` с **разными** URL, 3 `queued`; ни один `DemoRequestId` не повторяется |
+| **B6** | `DemoPool.TryClaimAsync` — атомарный guarded `ExecuteUpdateAsync` с перечитыванием кандидата; `ResetPasswordAsync` получает `mustChangePassword = false` | `Provisioning/Demo/DemoPool.cs`, `Provisioning/TenantAdminService.cs` | 5 параллельных запросов при пуле 2 → ровно 2 `ready` с **разными** URL, 3 `queued`; ни один `DemoRequestId` не повторяется |
 | **B7** | `JobKind.DemoProvision` — собрать одно демо из шаблона; пароль рандомизируется **на сборке** | `Jobs/DemoProvisionJobHandler.cs`, `Jobs/Job.cs` | Джоб `Succeeded`, шаг `Pooled at https://demo-k7m2xq.zulo.one`; `curl -sI` → 200 |
 | **B8** | `JobKind.DemoTemplate` + `SnapshotWriter` — снять снапшот golden, записать `Demo:TemplateSnapshotId`, протухшие `Pooled` пересобрать. **`Claimed` не трогать** | `Jobs/DemoTemplateJobHandler.cs`, `Snapshots/SnapshotWriter.cs` | `Demo:TemplateSnapshotId` в настройках, дамп на томе |
 | **B9** | `DemoPoolService` — жатва + пополнение. **Жатва НЕ через `JobChannel`** (он строго последовательный, апгрейд держит его часами); пополнение — через. Перезапуск-безопасность из колонки, а не из строки джоба | `Provisioning/Demo/DemoPoolService.cs`, `DemoNudge.cs` | Просрочить демо → через 70 с нет контейнера, тома, БД, роли, mongo-журнала; **`showcase` с просроченным `ExpiresAt` остаётся жив** |
@@ -275,8 +287,8 @@ LOCKED) RETURNING`, сбрасывает пароль, ставит `ExpiresAt =
 | **B12** | Регистрация в DI | `Program.cs` | С `Demo:Enabled=false` в логе нет демо-активности вообще |
 | **B13** | Панель: страница `Demos`, бейдж `demo` в списке тенантов, карточка на Overview | `web/src/Demos.tsx`, `App.tsx`, `Tenants.tsx`, `Overview.tsx`, `api.ts` | `npm run build && npm run lint` чисто; шесть одноразовых тенантов больше не выглядят как клиенты |
 | **B14** | Cloudflare: Worker на `demo.getzulo.com`, Turnstile, Access **Bypass** строго на `/api/demo/*` | `demo-worker/src/index.ts`, `wrangler.toml` | `POST cp.zulo.one/api/demo/request` → **401 от приложения** (не 302 от Access), `GET /api/tenants` → 302/401 |
-| **B15** | **Датасет** — модель `DemoData` в воркспейсе: компания, ~24 контрагента, ~60 номенклатур, цены, начальные остатки, ~200 продаж и ~40 закупок за 12 месяцев | `zuloone-workspace/DemoData/model.json` + `DataPackages/*.json` | Дамп **< 50 МБ**; `DemoProvision` — десятки секунд, не минуты |
-| **B16** | **Сначала завести `.sln` и `dotnet test` в CI** (их нет), потом тесты; расширить secret-grep на `adminPasswordOnce`/`logPassword` | `.github/workflows/ci.yml`, `ZuloOne.ControlPlane.sln` | Smoke: без токена 503, с чужим 401, с верным 202 (**не 500** — это проверка миграции), админский обзор 401 |
+| **B15** | **Датасет** — модель `DemoData` в воркспейсе: компания, ~24 контрагента, ~60 номенклатур, цены, складские зоны/ячейки, VAT-SA catalog, начальные остатки, ~200 продаж и ~40 закупок за 12 месяцев | `zuloone-workspace/DemoData/model.json` + `DataPackages/*.json` | Дамп **< 50 МБ**; `DemoProvision` — десятки секунд, не минуты |
+| **B16** | Запускать `dotnet test` в CI напрямую по test `.csproj`; расширить secret-grep на `adminPasswordOnce`/`logPassword`; после B10 добавить smoke публичного контракта | `.github/workflows/ci.yml` | Smoke: без токена 503, с чужим 401, с верным 202 (**не 500** — это проверка миграции), админский обзор 401 |
 | **B17** | Документация деплоя: §4.1 `ARCHITECTURE.md` **исправить** (CP достижим через Cloudflare), §7.5 `INSTALL.md` «No Workers» → «один Worker, вот почему это не дыра», арифметика ёмкости `zo-app-1` | `zulo-deployment/prod/{ARCHITECTURE,INSTALL}.md`, `.env.example` | Доки описывают то, что реально стоит |
 
 **Порядок и точка остановки.** B1→B4 не трогают публичную поверхность и откатываются по
