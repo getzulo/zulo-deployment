@@ -26,6 +26,10 @@ services:
       Oauth__Clients__1__ClientId: learn
       Oauth__Clients__1__DisplayName: Обучение
       Oauth__Clients__1__RedirectUris__0: https://learn.getzulo.com/callback
+    volumes:
+      # The password form's antiforgery token is sealed with this key ring.
+      # A new container without the mount rejects a form that was already open.
+      - /opt/zuloone/login-keys:/home/app/.aspnet/DataProtection-Keys
     labels:
       traefik.enable: "true"
       traefik.docker.network: zuloone-prod_edge
