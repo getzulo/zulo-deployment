@@ -125,6 +125,9 @@ services:
       LOGIN_CLIENT_SECRET: ${LOGIN_CLIENT_SECRET:?set LOGIN_CLIENT_SECRET in zo-app-1 .env}
       LOGIN_REDIRECT_URI: https://getzulo.com/api/cabinet/callback
       PUBLIC_ORIGIN: https://getzulo.com
+      # Same value as Portal__CabinetKey on the control plane. Lets a directory
+      # sign-in open the stands granted to that address.
+      CABINET_PORTAL_KEY: ${CABINET_PORTAL_KEY:?set CABINET_PORTAL_KEY in zo-app-1 .env, the same value as Portal__CabinetKey}
 
     extra_hosts:
       # cp.zulo.one is a real public record, proxied by Cloudflare — resolving
