@@ -26,6 +26,13 @@ services:
       Oauth__Clients__1__ClientId: learn
       Oauth__Clients__1__DisplayName: Обучение
       Oauth__Clients__1__RedirectUris__0: https://learn.getzulo.com/callback
+      # The operator panel. Password is not enough: the account needs
+      # ControlPlaneAccess, then a code in Telegram. The secret stays in login.env.
+      Oauth__Clients__2__ClientId: controlplane
+      Oauth__Clients__2__DisplayName: Панель
+      Oauth__Clients__2__ControlPlane: "true"
+      Oauth__Clients__2__RedirectUris__0: https://getzulo.cloudflareaccess.com/cdn-cgi/access/callback
+      Directory__ControlPlaneEmails__0: remixod@gmail.com
     volumes:
       # The password form's antiforgery token is sealed with this key ring.
       # A new container without the mount rejects a form that was already open.
