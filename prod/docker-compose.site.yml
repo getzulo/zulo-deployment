@@ -115,6 +115,16 @@ services:
       # would let anyone with the source mint a session for any address.
       #   node -e "console.log(require('crypto').randomBytes(32).toString('base64'))"
       CABINET_SESSION_KEY: ${CABINET_SESSION_KEY:?set CABINET_SESSION_KEY in zo-app-1's own .env, NOT cp.env — different host}
+      # The browser is sent to LOGIN_ISSUER. The code is exchanged on the edge
+      # network (LOGIN_INTERNAL_URL), so the cabinet does not need public egress
+      # to login.getzulo.com. The secret is the cabinet client's secret from
+      # login.env, stored on this host as LOGIN_CLIENT_SECRET.
+      LOGIN_ISSUER: https://login.getzulo.com
+      LOGIN_INTERNAL_URL: http://login:8080
+      LOGIN_CLIENT_ID: cabinet
+      LOGIN_CLIENT_SECRET: ${LOGIN_CLIENT_SECRET:?set LOGIN_CLIENT_SECRET in zo-app-1 .env}
+      LOGIN_REDIRECT_URI: https://getzulo.com/api/cabinet/callback
+      PUBLIC_ORIGIN: https://getzulo.com
 
     extra_hosts:
       # cp.zulo.one is a real public record, proxied by Cloudflare — resolving

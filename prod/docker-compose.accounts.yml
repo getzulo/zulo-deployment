@@ -1,0 +1,76 @@
+# login.getzulo.com and learn.getzulo.com.
+#
+#   cd /opt/zuloone
+#   LOGIN_IMAGE=10.10.0.210:5000/zulo-login:TAG \
+#   LEARN_IMAGE=10.10.0.210:5000/zulo-learn:TAG \
+#     docker compose -f docker-compose.yml -f docker-compose.accounts.yml up -d login learn
+#
+# A separate file so these two can be rolled without touching tenants or the
+# marketing site. Secrets for the directory (database password, OAuth client
+# secrets) live in login.env on zo-app-1, mode 0600, never in this repository.
+# Learn's client secret is LEARN_CLIENT_SECRET in zo-app-1's .env, the same
+# value as Oauth__Clients__1__ClientSecret in login.env. It is not in this file.
+
+services:
+  login:
+    image: ${LOGIN_IMAGE:?set LOGIN_IMAGE, e.g. 10.10.0.210:5000/zulo-login:2026.9.25}
+    restart: unless-stopped
+    env_file:
+      - ./login.env
+    environment:
+      Login__PublicUrl: https://login.getzulo.com
+      Login__TrustCloudflareConnectingIp: "true"
+      Oauth__Clients__0__ClientId: cabinet
+      Oauth__Clients__0__DisplayName: Кабинет
+      Oauth__Clients__0__RedirectUris__0: https://getzulo.com/api/cabinet/callback
+      Oauth__Clients__1__ClientId: learn
+      Oauth__Clients__1__DisplayName: Обучение
+      Oauth__Clients__1__RedirectUris__0: https://learn.getzulo.com/callback
+    labels:
+      traefik.enable: "true"
+      traefik.docker.network: zuloone-prod_edge
+      traefik.http.routers.login.rule: Host(`login.getzulo.com`)
+      traefik.http.routers.login.entrypoints: websecure
+      traefik.http.routers.login.tls: "true"
+      traefik.http.services.login.loadbalancer.server.port: "8080"
+      traefik.http.routers.login.middlewares: login-noindex@docker
+      traefik.http.middlewares.login-noindex.headers.customresponseheaders.X-Robots-Tag: "noindex, nofollow"
+    networks:
+      - edge
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8080/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 25s
+
+  learn:
+    image: ${LEARN_IMAGE:?set LEARN_IMAGE, e.g. 10.10.0.210:5000/zulo-learn:2026.9.25}
+    restart: unless-stopped
+    environment:
+      LOGIN_ISSUER: https://login.getzulo.com
+      LOGIN_INTERNAL_URL: http://login:8080
+      LOGIN_CLIENT_ID: learn
+      LOGIN_CLIENT_SECRET: ${LEARN_CLIENT_SECRET:?set LEARN_CLIENT_SECRET in zo-app-1 .env}
+      LOGIN_REDIRECT_URI: https://learn.getzulo.com/callback
+      COOKIE_SECURE: "true"
+    labels:
+      traefik.enable: "true"
+      traefik.docker.network: zuloone-prod_edge
+      traefik.http.routers.learn.rule: Host(`learn.getzulo.com`)
+      traefik.http.routers.learn.entrypoints: websecure
+      traefik.http.routers.learn.tls: "true"
+      traefik.http.services.learn.loadbalancer.server.port: "8080"
+    networks:
+      - edge
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:8080/healthz').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 30s
+      timeout: 3s
+      retries: 3
+      start_period: 5s
+
+networks:
+  edge:
+    external: true
+    name: zuloone-prod_edge
