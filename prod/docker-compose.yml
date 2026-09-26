@@ -195,9 +195,9 @@ networks:
     ipam:
       config:
         - subnet: 172.30.1.0/24
-          # Keep the pinned mongo address out of the dynamic pool. After a
-          # daemon restart tenants come up first, steal 172.30.1.2, and mongo
-          # then dies with "Address already in use" (exit 255) until someone
-          # moves the tenant off that IP by hand.
-          aux_addresses:
-            mongo: 172.30.1.2
+          gateway: 172.30.1.1
+          # Dynamic pool is .64–.127. Mongo is pinned at .2; tenants coming
+          # up first after a daemon restart cannot steal it. Do not put .2
+          # in aux_addresses — Docker then refuses to give that IP to mongo
+          # itself ("Address already in use", exit 255).
+          ip_range: 172.30.1.64/26

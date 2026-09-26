@@ -856,8 +856,9 @@ ufw's, so `ufw deny` leaves container traffic flowing while reporting the port b
 ### 5.4 Farm journal (Mongo)
 
 The tenant **Logs** page and the control-plane fleet journal read from Mongo, not
-Postgres. `docker compose` on `zo-app-1` starts one `mongo` service (pinned on the
-`data` bridge — see `docker-compose.yml`). Without the matching allowlist in
+Postgres. `docker compose` on `zo-app-1` starts one `mongo` service (pinned at
+`172.30.1.2` on the `data` bridge; the dynamic pool is `172.30.1.64/26` so a
+tenant that boots first cannot steal that address). Without the matching allowlist in
 `container-egress.sh` (`MONGO_NODES`, default `172.30.1.2`) tenant containers cannot
 reach it: Serilog buffers and drops silently, and both viewers stay empty even though
 Core is healthy.
