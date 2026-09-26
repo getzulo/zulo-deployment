@@ -1180,6 +1180,31 @@ closed, and each was tried:
 
 GitHub does not expose PAT creation over its API, so this step cannot be automated.
 
+### 8.2 A runner for login.getzulo.com
+
+The same machine, a third directory. Runners are per-repository: `zulo.one` and
+`getzulo.com` will never pick up `getzulo/zulo-login`.
+
+```bash
+# on zo-ci-1, as deploy
+mkdir -p ~/actions-runner-login && cd ~/actions-runner-login
+# GitHub → getzulo/zulo-login → Settings → Actions → Runners →
+# New self-hosted runner (Linux x64). Run the download and ./config.sh it shows.
+./svc.sh install && ./svc.sh start
+```
+
+Labels must include `self-hosted`, `linux`, `x64`. A push to `main` tests, builds
+`zulo-login:YYYY.0.<run>`, pushes to the local registry, then SSHs as `deploy` to
+`10.10.1.220` (zo-app-1), writes `LOGIN_IMAGE` in `/opt/zuloone/.env`, and recreates
+only the `login` service. `login.env` is not touched.
+
+`deploy@zo-ci-1` must already have BatchMode SSH to `deploy@10.10.1.220`. If the
+deploy step fails with that message, the image is in the registry; from the runner:
+
+```bash
+ssh-copy-id deploy@10.10.1.220
+```
+
 **Deploy through the workflow rather than by hand.** A manual `docker build` on the host
 skips the documentation gate, and that gate is the only thing standing between the
 public site and `roadmap.md`, the internal specifications and the gap analyses. It also
