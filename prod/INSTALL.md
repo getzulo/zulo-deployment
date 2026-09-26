@@ -833,7 +833,12 @@ cd /tmp/prod && sudo ./container-egress.sh --install
 ```
 
 Tenants get Postgres on 5432 and nothing else: not the rest of the LAN, not the
-unrelated machines on it, not the internet.
+unrelated machines on it, not the internet. `login.getzulo.com` is on the same
+bridge, so it is also default-deny. The script opens `challenges.cloudflare.com:443`
+(Turnstile siteverify) and `api.telegram.org:443` (panel 2FA) via
+`LOGIN_HTTPS_HOSTS`. Re-run `--install` after pulling a script that added that
+variable, or captcha verification and Telegram codes time out inside the
+container while the browser widget looks fine.
 
 This has to happen on the host. The router cannot do it — container traffic leaves the
 VM NAT'd behind `10.10.1.220`, so the MikroTik cannot tell it from the VM's own, and
@@ -1096,9 +1101,30 @@ on it, so confirm rather than assume.
 - No per-tenant DNS records
 - No ACME, no DNS-01, no API token in Traefik
 - No page rules or Workers
+- No Cloudflare Access Application in front of `cp.zulo.one` or `login.getzulo.com`
 
 > **Checkpoint 7** — `dig t1.zulo.one` returns a Cloudflare address, not your public IP.
 > If it returns your IP, the record is DNS-only (grey cloud) and the origin is exposed.
+
+### 7.6 Directory login (Turnstile + panel)
+
+`cp.zulo.one` is an OpenID Connect client of `login.getzulo.com`, not a Cloudflare
+Access Application. Delete any Access application that wrapped the panel; leave
+the orange cloud, WAF, and the Cloudflare-prefix origin guard.
+
+Turnstile lives on the password step of `login.getzulo.com`, not on the panel:
+
+1. **Cloudflare Dashboard → Turnstile → Add widget.** Hostnames:
+   `login.getzulo.com`. Widget mode: **Managed**.
+2. Put `Turnstile__SiteKey` and `Turnstile__Secret` in `/opt/zuloone/login.env`
+   (see `login.env.example`). Recreate the `login` container.
+3. `Oauth__Clients__2__ClientSecret` in that file must equal
+   `Directory__ClientSecret` in `zo-cp-1`'s `cp.env`.
+4. On `zo-cp-1`: `install -d -o 1654 -g 1654 /opt/zuloone/cp-keys` so OIDC
+   correlation cookies survive a recreate.
+
+A widget in the page without siteverify from the container is a closed door:
+re-apply `container-egress.sh` so `LOGIN_HTTPS_HOSTS` is in the chain.
 
 ---
 

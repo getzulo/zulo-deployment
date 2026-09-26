@@ -338,9 +338,28 @@ Cloudflare.
 - JS-челлендж и режим «я под атакой» не включаются на колбэках Google и
   Apple. Apple шлёт `form_post` без браузерного скрипта; челлендж съедает
   тело, и это выглядит как сломанный Apple.
-- Капча на каждый вход не ставится. Если журнал покажет перебор, это
-  Turnstile Cloudflare на ту же зону, после серии отказов, а не отдельный
-  сервис.
+- Капча на каждый вход не ставится отдельным экраном. На шаге пароля и на
+  сбросе стоит Cloudflare Turnstile (`appearance: interaction-only`): человек
+  почти не видит её, бот — видит. Сервер проверяет токен через Siteverify.
+  Production без ключей отказывает в посте пароля.
+
+---
+
+## Панель оператора
+
+Cloudflare Access Application перед `cp.zulo.one` не используется. Панель —
+OAuth-клиент `controlplane` с `redirect_uri=https://cp.zulo.one/signin-oidc`.
+Пароль вводится на `login.getzulo.com`, затем Telegram. Кука панели
+`__Host-zulo_cp`. Break-glass на порту 5099 без изменений.
+
+В Cloudflare Zero Trust удалить Access Application, который закрывал
+`cp.zulo.one`. Оранжевое облако, WAF и ограничение origin префиксами Cloudflare
+остаются. Создать виджет Turnstile на `login.getzulo.com` (Managed), ключи — в
+`login.env` (`Turnstile__SiteKey`, `Turnstile__Secret`). Секрет клиента панели
+один и тот же в `login.env` (`Oauth__Clients__2__ClientSecret`) и в `cp.env`
+(`Directory__ClientSecret`). Контейнер логина на `zo-edge0` по умолчанию не
+ходит в интернет: без `LOGIN_HTTPS_HOSTS` в `container-egress.sh` Siteverify и
+Telegram 2FA таймаутятся, хотя виджет в браузере рисуется.
 
 ---
 
@@ -349,12 +368,10 @@ Cloudflare.
 - Каталог организации (`Kind=organization`) и вход «рабочим» аккаунтом.
   Колонка `Kind` есть, строки такой нет.
 - Публичная регистрация чужих OAuth-клиентов. Таблица `Client` есть,
-  строки заводим мы: `cabinet` и `learn`.
+  строки заводим мы: `cabinet`, `learn` и `controlplane`.
 - SAML, device code, client credentials.
-- Вход оператора через этот хост.
 - Общая кука на родительском домене.
-- Cloudflare Access на `login.getzulo.com`. Перед хостом только прокси.
-- Капча на каждый вход. После серии отказов, если понадобится, — Turnstile.
+- Cloudflare Access на `login.getzulo.com` и на `cp.zulo.one`. Перед хостами только прокси.
 
 ERP-тенант клиента позже может стать третьим `Client` с тем же `sub`.
 Отдельной учётной записи «пользователь стенда» этот каталог не заменяет:

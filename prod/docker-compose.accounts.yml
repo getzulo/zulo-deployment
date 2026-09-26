@@ -7,7 +7,7 @@
 #
 # A separate file so these two can be rolled without touching tenants or the
 # marketing site. Secrets for the directory (database password, OAuth client
-# secrets) live in login.env on zo-app-1, mode 0600, never in this repository.
+# secrets, Turnstile secret) live in login.env on zo-app-1, mode 0600, never in this repository.
 # Learn's client secret is LEARN_CLIENT_SECRET in zo-app-1's .env, the same
 # value as Oauth__Clients__1__ClientSecret in login.env. It is not in this file.
 
@@ -27,12 +27,18 @@ services:
       Oauth__Clients__1__DisplayName: Обучение
       Oauth__Clients__1__RedirectUris__0: https://learn.getzulo.com/callback
       # The operator panel. Password is not enough: the account needs
-      # ControlPlaneAccess, then a code in Telegram. The secret stays in login.env.
+      # ControlPlaneAccess, then a code in Telegram. The secret stays in login.env
+      # (Oauth__Clients__2__ClientSecret) and must equal Directory__ClientSecret
+      # in zo-cp-1's cp.env.
       Oauth__Clients__2__ClientId: controlplane
       Oauth__Clients__2__DisplayName: Панель
       Oauth__Clients__2__ControlPlane: "true"
-      Oauth__Clients__2__RedirectUris__0: https://getzulo.cloudflareaccess.com/cdn-cgi/access/callback
+      Oauth__Clients__2__RedirectUris__0: https://cp.zulo.one/signin-oidc
       Directory__ControlPlaneEmails__0: remixod@gmail.com
+      # SiteKey and Secret come from login.env. Without both, Production refuses
+      # every password post. ExpectedHostname is pinned here so a leftover
+      # localhost value in login.env cannot skip the hostname check.
+      Turnstile__ExpectedHostname: login.getzulo.com
     volumes:
       # The password form's antiforgery token is sealed with this key ring.
       # A new container without the mount rejects a form that was already open.

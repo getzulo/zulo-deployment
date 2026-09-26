@@ -60,9 +60,47 @@ CP_PORT="${CP_PORT:-8443}"
 # Example: SMTP_DESTS="587 465"
 SMTP_DESTS="${SMTP_DESTS:-}"
 
+# login.getzulo.com sits on the same edge bridge as the tenants, so the catch-all
+# DROP below also applies to it. Siteverify and Telegram 2FA for the panel are
+# HTTPS to those two hosts; without this hole a password post looks like a
+# captcha failure and a control-plane sign-in never gets a Telegram code.
+# Hostnames are resolved at apply time (same as SMTP_DESTS). If either starts
+# timing out after a Cloudflare/Telegram A-record rotation, re-run this script.
+LOGIN_HTTPS_HOSTS="${LOGIN_HTTPS_HOSTS:-challenges.cloudflare.com:443 api.telegram.org:443}"
+
 UNIT=/etc/systemd/system/zuloone-container-egress.service
 
 log() { printf '\n\033[1;34m==>\033[0m %s\n' "$*"; }
+
+# $1 = space-separated specs (bare port, or host:port). $2 = label for skip logs.
+allow_tcp_dests() {
+  local dests="$1"
+  local label="$2"
+  local spec host port ips ip
+  [ -z "$dests" ] && return 0
+  for spec in $dests; do
+    if [ "$spec" -eq "$spec" ] 2>/dev/null; then
+      iptables -A DOCKER-USER -i "$BRIDGE" -p tcp --dport "$spec" -j RETURN
+      iptables -A DOCKER-USER -i "$DATA_BRIDGE" -p tcp --dport "$spec" -j RETURN
+      continue
+    fi
+    host="${spec%%:*}"
+    port="${spec##*:}"
+    if [ -z "$host" ] || [ "$host" = "$spec" ] || [ -z "$port" ]; then
+      echo "$label entry '$spec' is not a port or host:port — skipped" >&2
+      continue
+    fi
+    ips=$(getent ahostsv4 "$host" | awk '{print $1}' | sort -u)
+    if [ -z "$ips" ]; then
+      echo "$label: $host did not resolve — skipped" >&2
+      continue
+    fi
+    for ip in $ips; do
+      iptables -A DOCKER-USER -i "$BRIDGE" -d "$ip" -p tcp --dport "$port" -j RETURN
+      iptables -A DOCKER-USER -i "$DATA_BRIDGE" -d "$ip" -p tcp --dport "$port" -j RETURN
+    done
+  done
+}
 
 apply() {
   # Docker creates DOCKER-USER and jumps to it first from FORWARD. It never
@@ -101,33 +139,8 @@ apply() {
 
   # Optional: SMTP / Seq / similar. Must sit ABOVE the catch-all DROP.
   # Hostnames are resolved now; the rule matches the IP, not the name.
-  if [ -n "$SMTP_DESTS" ]; then
-    for spec in $SMTP_DESTS; do
-      # Bare port: any destination. host:port: pin to current A records.
-      if [ "$spec" -eq "$spec" ] 2>/dev/null; then
-        # Same dual-bridge reason as PG/Mongo: a tenant on edge+data often
-        # defaults via zo-data0, and an allow only on zo-edge0 times out.
-        iptables -A DOCKER-USER -i "$BRIDGE" -p tcp --dport "$spec" -j RETURN
-        iptables -A DOCKER-USER -i "$DATA_BRIDGE" -p tcp --dport "$spec" -j RETURN
-        continue
-      fi
-      host="${spec%%:*}"
-      port="${spec##*:}"
-      if [ -z "$host" ] || [ "$host" = "$spec" ] || [ -z "$port" ]; then
-        echo "SMTP_DESTS entry '$spec' is not a port or host:port — skipped" >&2
-        continue
-      fi
-      ips=$(getent ahostsv4 "$host" | awk '{print $1}' | sort -u)
-      if [ -z "$ips" ]; then
-        echo "SMTP_DESTS: $host did not resolve — skipped" >&2
-        continue
-      fi
-      for ip in $ips; do
-        iptables -A DOCKER-USER -i "$BRIDGE" -d "$ip" -p tcp --dport "$port" -j RETURN
-        iptables -A DOCKER-USER -i "$DATA_BRIDGE" -d "$ip" -p tcp --dport "$port" -j RETURN
-      done
-    done
-  fi
+  allow_tcp_dests "$SMTP_DESTS" SMTP_DESTS
+  allow_tcp_dests "$LOGIN_HTTPS_HOSTS" LOGIN_HTTPS_HOSTS
 
   # Everything else leaving the bridge: the rest of the LAN, the unrelated
   # machines on it, link-local metadata endpoints, and the internet.
@@ -252,6 +265,7 @@ Environment=MONGO_PORT=${MONGO_PORT}
 Environment=CP_HOST=${CP_HOST}
 Environment=CP_PORT=${CP_PORT}
 Environment="SMTP_DESTS=${SMTP_DESTS}"
+Environment="LOGIN_HTTPS_HOSTS=${LOGIN_HTTPS_HOSTS}"
 
 [Install]
 WantedBy=multi-user.target

@@ -165,19 +165,23 @@ What is true today:
 - **It has authentication**, two independent schemes, and they are not optional.
   `Auth/AuthSetup.cs` sets `RequireAuthenticatedUser()` as **both** the default and the
   fallback policy, so an endpoint that forgets `[Authorize]` is still closed. The
-  schemes are Cloudflare Access (JWT read only from the `Cf-Access-Jwt-Assertion`
-  header, validated against the team domain, then an e-mail allowlist) and a
-  break-glass operator session (bcrypt password plus mandatory TOTP with a replay
-  guard), the latter restricted to a loopback-bound port reachable only over SSH.
+  public way in is OpenID Connect against `login.getzulo.com` (authorization code +
+  PKCE, cookie `__Host-zulo_cp`). The password is typed only on the directory host,
+  behind Cloudflare Turnstile; a control-plane account still needs a Telegram code.
+  Cloudflare Access is not in front of the panel. The second scheme is a break-glass
+  operator session (bcrypt password plus mandatory TOTP with a replay guard),
+  restricted to a loopback-bound port reachable only over SSH.
 - **It is reachable from the internet**, deliberately. `mikrotik-firewall.rsc` forwards
   WAN → `10.10.0.200:8443` for Cloudflare source addresses only, and the pre-rollback
   checklist in that file lists `https://cp.zulo.one/` as a thing to verify. The
   compose file binds that port to the LAN address specifically so the router, not the
   host, decides who arrives.
 
-So the gate is two-layered on purpose: Cloudflare Access in front, application
-authentication behind it. The original warning — that Access must never be the *only*
-gate — still stands, and is now satisfied rather than pending.
+So the gate is two-layered on purpose: Cloudflare proxy and WAF in front, directory
+identity behind it. Compromising the panel is still a one-step path to every tenant.
+The login container cannot reach the internet except Turnstile siteverify and
+Telegram (`LOGIN_HTTPS_HOSTS` in `container-egress.sh`); without that hole the
+password form rejects every post.
 
 **What has NOT changed**, and is still the reason this VM sits in the core tier: the
 registry stores each tenant's `DatabasePassword` and `JwtSigningKey` in plaintext, and

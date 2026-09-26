@@ -15,6 +15,7 @@ certs/
 # Runtime state
 logs/
 volumes/
+cp-keys/
 acme.json
 *.sqlite
 *.sqlite-shm

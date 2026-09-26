@@ -29,7 +29,8 @@ services:
     restart: unless-stopped
 
     # Every secret the panel holds: the registry connection, the tenant-database
-    # admin password, the Cloudflare Access audience, the break-glass operator
+    # admin password, the directory OAuth client secret (same value as
+    # Oauth__Clients__2__ClientSecret in login.env), the break-glass operator
     # hash, the Patroni credentials. Root:deploy 0640 on the host, never in git.
     # 0600 blocked the CI hop: deploy can docker but cannot sudo, and Compose
     # reads env_file as the invoking user before talking to the daemon.
@@ -50,6 +51,10 @@ services:
       # 8080 is dropped: nothing publishes it, and a listener nobody reaches is a
       # listener nobody notices is wrong.
       ASPNETCORE_URLS: "http://+:5099;https://+:8443"
+      Directory__Issuer: https://login.getzulo.com
+      Directory__ClientId: controlplane
+      Directory__CallbackPath: /signin-oidc
+      Directory__PanelUrl: https://cp.zulo.one
 
     # Matches the image's own APP_UID. Stated here as well because the certificate
     # directory below is readable only by this gid — if the two ever drift, Kestrel
@@ -71,6 +76,10 @@ services:
       # host: the container can traverse in, and nothing else on the box can list
       # the directory.
       - ./certs:/certs:ro
+      # OpenID Connect correlation cookies are sealed with this ring. Recreating
+      # the container mid-login without it fails the round-trip with no useful log.
+      # On the host: install -d -o 1654 -g 1654 /opt/zuloone/cp-keys
+      - ./cp-keys:/home/app/.aspnet/DataProtection-Keys
       # Tenant snapshots (pg_dump -Fc). A NAMED volume, not a bind: these must
       # survive a container recreate, and the snapshot taken immediately before an
       # upgrade IS that upgrade's rollback — losing it while recreating the
